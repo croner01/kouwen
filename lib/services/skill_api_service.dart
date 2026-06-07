@@ -108,7 +108,7 @@ class SkillApiService {
     _dio.options.receiveTimeout = const Duration(seconds: 120);
   }
 
-  static const defaultBaseUrl = 'https://kouwen-sandbox.loca.lt';
+  static const defaultBaseUrl = 'https://none-ringtone-adaptor-materials.trycloudflare.com';
 
   String? _jwtToken;
 
