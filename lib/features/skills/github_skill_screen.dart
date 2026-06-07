@@ -24,6 +24,23 @@ class _GitHubSkillScreenState
   bool _isLoading = false;
   String? _error;
 
+  /// Extract "owner/repo" from a URL like https://gitee.com/ren02/skills
+  static String _extractRepoPath(String url) {
+    final trimmed = url.trim();
+    // If it's already in owner/repo format, return as-is
+    if (!trimmed.startsWith('http://') && !trimmed.startsWith('https://') &&
+        trimmed.contains('/') && !trimmed.contains(' ')) {
+      return trimmed.split('/').take(2).join('/');
+    }
+    // Parse full URL
+    try {
+      final uri = Uri.parse(trimmed);
+      return uri.pathSegments.where((s) => s.isNotEmpty).take(2).join('/');
+    } catch (_) {
+      return trimmed;
+    }
+  }
+
   @override
   void dispose() {
     _urlCtrl.dispose();
@@ -117,7 +134,7 @@ class _GitHubSkillScreenState
       return;
     }
 
-    final repoUrl = _urlCtrl.text.trim();
+    final repoUrl = _extractRepoPath(_urlCtrl.text.trim());
     if (repoUrl.isEmpty) return;
 
     try {

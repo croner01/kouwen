@@ -113,21 +113,37 @@ class InstallerNotifier extends StateNotifier<InstallState> {
       final api = _ref.read(skillApiServiceProvider);
       final installResult = await api.installSkill(repoName);
 
-      // Cache in local SQLite for yamlContent access
+      // Cache in local SQLite for yamlContent access.
+      // Try to download SKILL.md from Gitee for each installed skill.
       final repo = SkillRepository(_ref.read(dbProvider));
       for (final s in installResult.skills) {
         try {
           final exists = await repo.skillExists(s.name);
-          if (!exists) {
-            await repo.installSkill(
-              name: s.name,
-              version: '1.0.0',
-              author: repoName,
-              category: '通用',
-              yamlContent: '',
-              description: '后端安装 · ${s.files} 个文件',
+          if (exists) continue;
+
+          // Look up the GitHubSkillResult to get the raw URL for SKILL.md
+          String? yamlContent;
+          final match = result.skills
+              .where((r) => r.isValid &&
+                  (r.name == s.name ||
+                   r.path.contains(s.name)))
+              .firstOrNull;
+          if (match != null) {
+            final loader = GitHubSkillLoader(
+              token: gitHubToken,
+              giteeToken: giteeToken,
             );
+            yamlContent = await loader.downloadSkillContent(match.url);
           }
+
+          await repo.installSkill(
+            name: s.name,
+            version: '1.0.0',
+            author: repoName,
+            category: '通用',
+            yamlContent: yamlContent ?? '',
+            description: '后端安装 · ${s.files} 个文件',
+          );
         } catch (_) {}
       }
 

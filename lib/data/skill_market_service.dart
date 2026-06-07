@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'package:dio/dio.dart';
 import 'package:flutter/services.dart' show rootBundle;
 import 'repositories.dart';
 import 'database.dart';
@@ -153,9 +154,30 @@ class SkillMarketService {
     final result = await apiService.installSkill(skill.sourceRepo!);
     skill.isInstalled = true;
 
+    // Set backend ID so user can immediately uninstall without re-fetching list
+    if (result.skills.isNotEmpty) {
+      skill.id = result.skills.first.id;
+    }
+
     // Also save to local SQLite as cache (for yamlContent access in chat/detail)
     if (result.skills.isNotEmpty) {
       try {
+        // Try to download SKILL.md content for local cache
+        String? yamlContent;
+        if (skill.sourceUrl != null) {
+          try {
+            final dio = Dio();
+            dio.options.connectTimeout = const Duration(seconds: 10);
+            dio.options.receiveTimeout = const Duration(seconds: 15);
+            final resp = await dio.get(skill.sourceUrl!);
+            if (resp.statusCode == 200 && resp.data != null) {
+              yamlContent = resp.data.toString();
+            }
+          } catch (_) {
+            // Download failed — backend has the content, local cache will be empty
+          }
+        }
+
         final repo = SkillRepository(AppDatabase.instance);
         for (final s in result.skills) {
           final exists = await repo.skillExists(s.name);
@@ -165,7 +187,7 @@ class SkillMarketService {
             version: '1.0.0',
             author: skill.author,
             category: skill.category,
-            yamlContent: '', // Backend has the real content on PVC
+            yamlContent: yamlContent ?? '',
             description: '通过后端安装 · ${s.files} 个文件',
           );
         }
