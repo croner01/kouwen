@@ -102,7 +102,7 @@ class SkillApiService {
   final String _baseUrl;
 
   SkillApiService({required String baseUrl, Dio? dio})
-      : _baseUrl = baseUrl,
+      : _baseUrl = baseUrl.endsWith('/') ? baseUrl.substring(0, baseUrl.length - 1) : baseUrl,
         _dio = dio ?? Dio() {
     _dio.options.connectTimeout = const Duration(seconds: 10);
     _dio.options.receiveTimeout = const Duration(seconds: 120);

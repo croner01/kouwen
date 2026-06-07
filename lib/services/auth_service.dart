@@ -16,7 +16,7 @@ class AuthService {
     required String baseUrl,
     Dio? dio,
     FlutterSecureStorage? storage,
-  })  : _baseUrl = baseUrl,
+  })  : _baseUrl = baseUrl.endsWith('/') ? baseUrl.substring(0, baseUrl.length - 1) : baseUrl,
         _dio = dio ?? Dio(),
         _storage = storage ?? const FlutterSecureStorage() {
     _dio.options.connectTimeout = const Duration(seconds: 10);

@@ -21,7 +21,7 @@ final installedSkillsProvider = FutureProvider<List<Skill>>((ref) async {
       final local =
           localSkills.where((s) => s.name == bs.name).firstOrNull;
       // Prefer local yamlContent if non-empty, otherwise use backend's
-      final yaml = (local?.yamlContent != null && local!.yamlContent.isNotEmpty)
+      final yaml = (local != null && local.yamlContent.isNotEmpty)
           ? local.yamlContent
           : bs.yamlContent;
       result.add(Skill(

@@ -343,22 +343,27 @@ class _ServerUrlTile extends ConsumerWidget {
             child: const Text('取消'),
           ),
           TextButton(
-            onPressed: () {
-              ref.read(serverUrlProvider.notifier).setUrl(ctrl.text.trim());
+            onPressed: () async {
+              final messenger = ScaffoldMessenger.of(context);
+              await ref.read(serverUrlProvider.notifier).setUrl(ctrl.text.trim());
+              // AuthService was recreated with null token — restore from SecureStorage
+              final loggedIn = await ref.read(authServiceProvider).restoreSession();
               ctrl.dispose();
-              Navigator.pop(ctx);
-              ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(content: Text('服务器地址已更新')),
+              if (ctx.mounted) Navigator.pop(ctx);
+              messenger.showSnackBar(
+                SnackBar(content: Text(loggedIn ? '服务器地址已更新' : '地址已更新，请重新登录')),
               );
             },
             child: const Text('保存'),
           ),
           TextButton(
-            onPressed: () {
-              ref.read(serverUrlProvider.notifier).resetToDefault();
+            onPressed: () async {
+              final messenger = ScaffoldMessenger.of(context);
+              await ref.read(serverUrlProvider.notifier).resetToDefault();
+              await ref.read(authServiceProvider).restoreSession();
               ctrl.dispose();
-              Navigator.pop(ctx);
-              ScaffoldMessenger.of(context).showSnackBar(
+              if (ctx.mounted) Navigator.pop(ctx);
+              messenger.showSnackBar(
                 const SnackBar(content: Text('已恢复默认地址')),
               );
             },
