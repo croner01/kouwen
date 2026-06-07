@@ -14,18 +14,23 @@ final installedSkillsProvider = FutureProvider<List<Skill>>((ref) async {
     final backendSkills = await api.listSkills();
     final localSkills = await repo.getInstalledSkills();
 
-    // Merge: backend provides IDs and metadata, local provides yamlContent
+    // Merge: backend provides IDs, metadata, and yamlContent;
+    // local cache fills in collection/description when available.
     final result = <Skill>[];
     for (final bs in backendSkills) {
       final local =
           localSkills.where((s) => s.name == bs.name).firstOrNull;
+      // Prefer local yamlContent if non-empty, otherwise use backend's
+      final yaml = (local?.yamlContent != null && local!.yamlContent.isNotEmpty)
+          ? local.yamlContent
+          : bs.yamlContent;
       result.add(Skill(
         id: local?.id ?? bs.id,
         name: bs.name,
         version: bs.version,
         author: bs.author,
         category: bs.category,
-        yamlContent: local?.yamlContent ?? '',
+        yamlContent: yaml,
         installedAt: bs.installedAt ?? DateTime.now(),
         updatedAt: local?.updatedAt,
         isCollection: local?.isCollection ?? false,

@@ -9,6 +9,7 @@ class BackendSkill {
   final String category;
   final String? sourceRepo;
   final List<String> pythonDeps;
+  final String yamlContent;
   final DateTime? installedAt;
 
   const BackendSkill({
@@ -19,6 +20,7 @@ class BackendSkill {
     required this.category,
     this.sourceRepo,
     this.pythonDeps = const [],
+    this.yamlContent = '',
     this.installedAt,
   });
 
@@ -33,6 +35,7 @@ class BackendSkill {
       pythonDeps: json['python_deps'] is List
           ? (json['python_deps'] as List).cast<String>()
           : [],
+      yamlContent: (json['yaml_content'] as String?) ?? '',
       installedAt: json['installed_at'] != null
           ? DateTime.tryParse(json['installed_at'] as String)
           : null,
