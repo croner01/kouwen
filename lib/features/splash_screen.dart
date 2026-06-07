@@ -1,25 +1,29 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show rootBundle;
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:yaml/yaml.dart';
 import '../engine/skill_parser.dart';
 import '../data/database.dart';
 import '../data/repositories.dart';
+import '../providers.dart';
+import 'auth/login_screen.dart';
 import 'chat/chat_list_screen.dart';
 
-class SplashScreen extends StatefulWidget {
+class SplashScreen extends ConsumerStatefulWidget {
   const SplashScreen({super.key});
 
   @override
-  State<SplashScreen> createState() => _SplashScreenState();
+  ConsumerState<SplashScreen> createState() => _SplashScreenState();
 }
 
-class _SplashScreenState extends State<SplashScreen>
+class _SplashScreenState extends ConsumerState<SplashScreen>
     with SingleTickerProviderStateMixin {
   late final AnimationController _ctrl;
   late final Animation<double> _fadeIn;
   late final Animation<double> _scaleIn;
   bool _initDone = false;
   bool _minTimeElapsed = false;
+  bool _authChecked = false;
 
   @override
   void initState() {
@@ -47,6 +51,19 @@ class _SplashScreenState extends State<SplashScreen>
       _initDone = true;
       _tryNavigate();
     });
+
+    // Check auth state
+    _checkAuth().then((_) {
+      _authChecked = true;
+      _tryNavigate();
+    });
+  }
+
+  Future<void> _checkAuth() async {
+    try {
+      final auth = ref.read(authServiceProvider);
+      await auth.restoreSession();
+    } catch (_) {}
   }
 
   Future<void> _initSkills() async {
@@ -103,10 +120,14 @@ class _SplashScreenState extends State<SplashScreen>
   }
 
   void _tryNavigate() {
-    if (_initDone && _minTimeElapsed && mounted) {
+    if (_initDone && _authChecked && _minTimeElapsed && mounted) {
+      final auth = ref.read(authServiceProvider);
+      final destination = auth.isLoggedIn
+          ? const ChatListScreen()
+          : const LoginScreen();
       Navigator.of(context).pushReplacement(
         PageRouteBuilder(
-          pageBuilder: (_, __, ___) => const ChatListScreen(),
+          pageBuilder: (_, __, ___) => destination,
           transitionsBuilder: (_, anim, __, child) {
             return FadeTransition(opacity: anim, child: child);
           },

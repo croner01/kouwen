@@ -5,11 +5,10 @@ import '../../../data/models.dart';
 import '../../../data/repositories.dart';
 import '../../../engine/skill_parser.dart';
 import '../../../engine/skill_router.dart';
-import '../../../engine/prompt_builder.dart';
+import '../../../services/agent_service.dart';
 import '../../../services/api_service.dart';
 import '../../../services/model_manager.dart';
 import '../../../services/file_attachment_service.dart';
-import '../../../services/web_search_service.dart';
 
 class ChatState {
   final List<Message> messages;
@@ -57,17 +56,17 @@ class ChatState {
 }
 
 class ChatNotifier extends StateNotifier<ChatState> {
+  final Ref _ref;
   final ConversationRepository _conversationRepo;
   final SkillRepository _skillRepo;
   final ModelManager _modelManager;
-  final ApiService _apiService;
   CancelToken? _activeCancelToken;
 
   ChatNotifier(Ref ref)
-      : _conversationRepo = ref.read(conversationRepoProvider),
+      : _ref = ref,
+        _conversationRepo = ref.read(conversationRepoProvider),
         _skillRepo = ref.read(skillRepoProvider),
         _modelManager = ref.read(modelManagerProvider),
-        _apiService = ref.read(apiServiceProvider),
         super(const ChatState());
 
   /// Create a new conversation
@@ -245,73 +244,61 @@ class ChatNotifier extends StateNotifier<ChatState> {
       );
     }
 
-    // ── Web Search ──
-    // Auto-trigger on time-sensitive keywords even when toggle is off.
-    final shouldSearch = state.webSearchEnabled || _needsSearch(content);
-    String? searchContext;
-    Map<String, dynamic>? searchParam;
-
-    if (shouldSearch) {
-      // 1) Model-native search: pass search param in API request body.
-      //    The model itself searches, reads, and synthesizes the answer.
-      searchParam = ApiService.detectSearchParam(modelConfig.modelName);
-      if (searchParam == null) {
-        // 2) Fallback: client-side search via Jina Reader (free, no Key).
-        //    Search the web, fetch the top result's full content as
-        //    clean Markdown, then inject it as context into the prompt.
-        try {
-          final ws = WebSearchService();
-          final results = await ws.search(content);
-          if (results.isNotEmpty) {
-            String? fullContent;
-            String? sourceTitle;
-            if (results.first.url.isNotEmpty) {
-              fullContent = await ws.fetch(results.first.url);
-              sourceTitle = results.first.title;
-            }
-            searchContext = WebSearchService.formatForLLM(
-              results,
-              fullContent: fullContent,
-              sourceTitle: sourceTitle,
-            );
-          }
-        } catch (_) {
-          // Search failed silently — continue without results
-        }
-      }
-    }
-
     try {
-      final systemPrompt =
-          (state.skill?.systemPrompt ?? _defaultSystemPrompt()) +
-              '\n\n${_dateContext()}';
-      var userInput = content;
-      if (searchContext != null) {
-        userInput = '$searchContext\n\n用户问题: $content';
+      // Build messages for Agent
+      final systemPrompt = (state.skill?.systemPrompt ?? _defaultSystemPrompt());
+
+      // Build conversation messages (no context injection — Agent handles tools)
+      final agentMessages = <Map<String, String>>[];
+      for (final msg in previousMessages) {
+        if (msg.role == MessageRole.system) continue;
+        agentMessages.add({
+          'role': msg.role.name,
+          'content': msg.content,
+        });
       }
-      final messages = PromptBuilder.buildMessages(
-        systemPrompt: systemPrompt,
-        userInput: userInput,
-        history: previousMessages,
-        maxHistoryRounds: 20,
-      );
+      agentMessages.add({'role': 'user', 'content': content});
 
       // Cancel any previous in-flight request
       _activeCancelToken?.cancel();
       _activeCancelToken = CancelToken();
-      final stream = _apiService.chatStream(
-        apiUrl: modelConfig.apiUrl,
+
+      // ── Agent Service (handles sandbox + search internally) ──
+      final agent = _ref.read(agentServiceProvider);
+      // Use JWT if available for backend conversation management
+      final auth = _ref.read(authServiceProvider);
+      if (auth.isLoggedIn && auth.token != null) {
+        agent.setAuth(auth.token!);
+      }
+      final stream = agent.chat(
         apiKey: apiKey,
-        modelName: modelConfig.modelName,
-        messages: messages,
+        baseUrl: modelConfig.apiUrl,
+        model: modelConfig.modelName,
+        messages: agentMessages,
+        systemPrompt: '$systemPrompt\n\n${_dateContext()}',
         cancelToken: _activeCancelToken,
-        searchParam: searchParam,
       );
 
       String fullResponse = '';
-      await for (final chunk in stream) {
-        fullResponse += chunk;
-        state = state.copyWith(streamingContent: fullResponse);
+      await for (final event in stream) {
+        if (event is TextDeltaEvent) {
+          fullResponse += event.content;
+          state = state.copyWith(streamingContent: fullResponse);
+        } else if (event is ToolUseEvent) {
+          final toolLabel = _toolLabel(event.name, event.input);
+          fullResponse += '\n\n> 🔧 $toolLabel\n\n';
+          state = state.copyWith(streamingContent: fullResponse);
+        } else if (event is ToolResultEvent) {
+          // Tool results are internal — handled by Agent
+        } else if (event is AgentDoneEvent) {
+          if (event.truncated) {
+            fullResponse += '\n\n> ⚠️ 达到最大工具调用次数，回复可能不完整。';
+            state = state.copyWith(streamingContent: fullResponse);
+          }
+        } else if (event is AgentErrorEvent) {
+          fullResponse += '\n\n> ❌ 错误: ${event.message}';
+          state = state.copyWith(streamingContent: fullResponse);
+        }
       }
 
       if (fullResponse.isNotEmpty) {
@@ -388,22 +375,6 @@ class ChatNotifier extends StateNotifier<ChatState> {
     state = state.copyWith(suggestedSkills: []);
   }
 
-  /// Auto-detect whether the user's message needs a web search.
-  /// Triggers on time-sensitive, real-time, or URL-containing queries.
-  bool _needsSearch(String input) {
-    if (input.startsWith('http://') || input.startsWith('https://')) return true;
-    final lower = input.toLowerCase();
-    const triggers = [
-      '最新', '今天', '最近', '新闻', '行情', '价格', '天气',
-      '股票', '比分', '汇率', '涨停', '跌停', '大盘',
-      '2025', '2026', '今年',
-    ];
-    for (final t in triggers) {
-      if (lower.contains(t)) return true;
-    }
-    return false;
-  }
-
   String _defaultSystemPrompt() {
     return '你是叩问 AI 助手，一个知识广博、无所不谈的专业分析伙伴。\n\n'
         '核心原则：\n'
@@ -412,6 +383,16 @@ class ChatNotifier extends StateNotifier<ChatState> {
         '3. 遇到不确定的内容，给出你知道的部分，标注不确定之处\n'
         '4. 优先提供有用信息，而非拒绝回答\n\n'
         '你是用户的深度思考伙伴，任何问题都值得认真对待和分析。';
+  }
+
+  /// Human-readable label for tool calls shown in the chat.
+  static String _toolLabel(String name, Map<String, dynamic> input) {
+    return switch (name) {
+      'sandbox_execute' =>
+        '执行${input['language'] == 'bash' ? 'Bash' : 'Python'}脚本',
+      'web_search' => '搜索: ${input['query'] ?? ''}',
+      _ => '调用工具: $name',
+    };
   }
 
   /// Build current date/time context so the LLM knows "now".

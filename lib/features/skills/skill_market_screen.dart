@@ -346,11 +346,29 @@ class _SkillMarketScreenState extends ConsumerState<SkillMarketScreen> {
     } catch (_) {
       match = null;
     }
+
+    // No local cache — try to create placeholder from backend data
     if (match == null) {
-      // Skill was uninstalled elsewhere — refresh and bail out
+      if (ms.id != null) {
+        try {
+          match = await repo.installSkill(
+            name: ms.name,
+            version: ms.version,
+            author: ms.author,
+            category: ms.category,
+            yamlContent: '',
+            description: '通过后端安装',
+          );
+        } catch (_) {
+          match = null;
+        }
+      }
+    }
+
+    if (match == null) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('技能已卸载，请刷新')),
+          const SnackBar(content: Text('技能未找到，请刷新后重试')),
         );
       }
       return;
