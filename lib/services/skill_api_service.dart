@@ -108,8 +108,6 @@ class SkillApiService {
     _dio.options.receiveTimeout = const Duration(seconds: 120);
   }
 
-  static const defaultBaseUrl = 'https://none-ringtone-adaptor-materials.trycloudflare.com';
-
   String? _jwtToken;
 
   void setAuth(String token) => _jwtToken = token;

@@ -240,6 +240,9 @@ class SettingsScreen extends ConsumerWidget {
             },
           ),
           const Divider(height: 32),
+          _SectionHeader(title: '服务器'),
+          _ServerUrlTile(),
+          const Divider(height: 32),
           _SectionHeader(title: '关于'),
           const ListTile(
             title: Text('叩问'),
@@ -288,6 +291,81 @@ class _WebSearchInfoTile extends StatelessWidget {
       title: const Text('联网搜索'),
       subtitle: const Text('模型原生搜索 / Jina Reader 兜底，无需额外配置'),
       onTap: () => _showSearchInfo(context),
+    );
+  }
+}
+
+class _ServerUrlTile extends ConsumerWidget {
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final url = ref.watch(serverUrlProvider);
+    return ListTile(
+      leading: const Icon(Icons.cloud_outlined, color: Color(0xFF4F46E5)),
+      title: const Text('服务器地址'),
+      subtitle: Text(url, style: const TextStyle(fontSize: 12, fontFamily: 'monospace')),
+      onTap: () => _showEditDialog(context, ref, url),
+    );
+  }
+
+  void _showEditDialog(BuildContext context, WidgetRef ref, String currentUrl) {
+    final ctrl = TextEditingController(text: currentUrl);
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('服务器地址'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              '修改后立即生效。隧道重启后地址会改变，需要在此更新。',
+              style: TextStyle(fontSize: 13, color: Colors.grey),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: ctrl,
+              autofocus: true,
+              decoration: const InputDecoration(
+                labelText: '服务器 URL',
+                hintText: 'https://xxx.trycloudflare.com',
+                border: OutlineInputBorder(),
+              ),
+              style: const TextStyle(fontSize: 13, fontFamily: 'monospace'),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () {
+              ctrl.dispose();
+              Navigator.pop(ctx);
+            },
+            child: const Text('取消'),
+          ),
+          TextButton(
+            onPressed: () {
+              ref.read(serverUrlProvider.notifier).setUrl(ctrl.text.trim());
+              ctrl.dispose();
+              Navigator.pop(ctx);
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(content: Text('服务器地址已更新')),
+              );
+            },
+            child: const Text('保存'),
+          ),
+          TextButton(
+            onPressed: () {
+              ref.read(serverUrlProvider.notifier).resetToDefault();
+              ctrl.dispose();
+              Navigator.pop(ctx);
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(content: Text('已恢复默认地址')),
+              );
+            },
+            child: Text('恢复默认', style: TextStyle(color: Colors.grey.shade600)),
+          ),
+        ],
+      ),
     );
   }
 }

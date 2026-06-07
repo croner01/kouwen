@@ -5,14 +5,19 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 class AuthService {
   final Dio _dio;
   final FlutterSecureStorage _storage;
+  final String _baseUrl;
   static const _tokenKey = 'kouwen_jwt';
   static const _userKey = 'kouwen_user';
 
   String? _token;
   Map<String, dynamic>? _user;
 
-  AuthService({Dio? dio, FlutterSecureStorage? storage})
-      : _dio = dio ?? Dio(),
+  AuthService({
+    required String baseUrl,
+    Dio? dio,
+    FlutterSecureStorage? storage,
+  })  : _baseUrl = baseUrl,
+        _dio = dio ?? Dio(),
         _storage = storage ?? const FlutterSecureStorage() {
     _dio.options.connectTimeout = const Duration(seconds: 10);
   }
@@ -20,8 +25,6 @@ class AuthService {
   String? get token => _token;
   Map<String, dynamic>? get user => _user;
   bool get isLoggedIn => _token != null;
-
-  static const defaultBaseUrl = 'https://none-ringtone-adaptor-materials.trycloudflare.com';
 
   /// Restore saved session from secure storage.
   Future<bool> restoreSession() async {
@@ -32,7 +35,7 @@ class AuthService {
       _token = t;
       _user = jsonDecode(u) as Map<String, dynamic>;
       final resp = await _dio.get(
-        '${AuthService.defaultBaseUrl}/api/v1/auth/me',
+        '$_baseUrl/api/v1/auth/me',
         options: Options(headers: {'Authorization': 'Bearer $_token'}),
       );
       if (resp.statusCode == 200) {
@@ -52,7 +55,7 @@ class AuthService {
     String nickname = '',
   }) async {
     final resp = await _dio.post(
-      '${AuthService.defaultBaseUrl}/api/v1/auth/register',
+      '$_baseUrl/api/v1/auth/register',
       data: {'email': email, 'password': password, 'nickname': nickname},
     );
     final data = resp.data as Map<String, dynamic>;
@@ -67,7 +70,7 @@ class AuthService {
     required String password,
   }) async {
     final resp = await _dio.post(
-      '${AuthService.defaultBaseUrl}/api/v1/auth/login',
+      '$_baseUrl/api/v1/auth/login',
       data: {'email': email, 'password': password},
     );
     final data = resp.data as Map<String, dynamic>;

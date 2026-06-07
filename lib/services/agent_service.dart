@@ -42,7 +42,6 @@ class AgentErrorEvent extends AgentEvent {
 class AgentService {
   final Dio _dio;
   final String _baseUrl;
-  CancelToken? _cancelToken;
 
   AgentService({required String baseUrl, Dio? dio})
       : _baseUrl = baseUrl,
@@ -51,15 +50,10 @@ class AgentService {
     _dio.options.receiveTimeout = const Duration(minutes: 5);
   }
 
-  static const defaultUrl = 'https://none-ringtone-adaptor-materials.trycloudflare.com';
   String? _jwtToken;
 
   void setAuth(String token) => _jwtToken = token;
   void clearAuth() => _jwtToken = null;
-
-  Map<String, String> get _headers => _jwtToken != null
-      ? {'Authorization': 'Bearer $_jwtToken'}
-      : {};
 
   Future<bool> healthCheck() async {
     try {
@@ -81,8 +75,6 @@ class AgentService {
     int maxTurns = 15,
     CancelToken? cancelToken,
   }) async* {
-    _cancelToken = cancelToken;
-
     final response = await _dio.post(
       '$_baseUrl/api/v1/agent/chat',
       data: {
@@ -96,7 +88,10 @@ class AgentService {
       },
       options: Options(
         responseType: ResponseType.stream,
-        headers: {'Accept': 'text/event-stream'},
+        headers: {
+          'Accept': 'text/event-stream',
+          if (_jwtToken != null) 'Authorization': 'Bearer $_jwtToken',
+        },
       ),
       cancelToken: cancelToken,
     );

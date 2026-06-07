@@ -9,6 +9,7 @@ import 'services/auth_service.dart';
 import 'services/sandbox_service.dart';
 import 'services/secure_storage_service.dart';
 import 'services/skill_api_service.dart';
+import 'services/server_url_service.dart';
 
 final dbProvider = Provider<AppDatabase>((ref) => AppDatabase.instance);
 
@@ -41,18 +42,32 @@ final githubServiceProvider = Provider<GitHubService>(
   (ref) => GitHubService(ref.watch(secureStorageProvider)),
 );
 
-final sandboxServiceProvider = Provider<SandboxService>(
-  (ref) => SandboxService(baseUrl: SandboxService.defaultUrl),
-);
+/// Persisted server URL. Initialized from SecureStorage on first access.
+final serverUrlProvider =
+    StateNotifierProvider<ServerUrlNotifier, String>((ref) {
+  final notifier = ServerUrlNotifier(ref.watch(secureStorageProvider));
+  notifier.load();
+  return notifier;
+});
 
-final agentServiceProvider = Provider<AgentService>(
-  (ref) => AgentService(baseUrl: AgentService.defaultUrl),
-);
+final sandboxServiceProvider = Provider<SandboxService>((ref) {
+  final url = ref.watch(serverUrlProvider);
+  return SandboxService(baseUrl: url);
+});
 
-final authServiceProvider = Provider<AuthService>((ref) => AuthService());
+final agentServiceProvider = Provider<AgentService>((ref) {
+  final url = ref.watch(serverUrlProvider);
+  return AgentService(baseUrl: url);
+});
+
+final authServiceProvider = Provider<AuthService>((ref) {
+  final url = ref.watch(serverUrlProvider);
+  return AuthService(baseUrl: url);
+});
 
 final skillApiServiceProvider = Provider<SkillApiService>((ref) {
-  final service = SkillApiService(baseUrl: SkillApiService.defaultBaseUrl);
+  final url = ref.watch(serverUrlProvider);
+  final service = SkillApiService(baseUrl: url);
   // Auto-inject JWT if user is logged in
   final auth = ref.watch(authServiceProvider);
   if (auth.isLoggedIn && auth.token != null) {

@@ -47,19 +47,24 @@ class SandboxService {
     _dio.options.receiveTimeout = const Duration(seconds: 130); // max script timeout + buffer
   }
 
-  /// Default sandbox server URL — localtunnel stable domain.
-  /// This URL persists across server reboots.
+  /// Default sandbox server URL — fallback when no user-configured URL.
   static const defaultUrl = 'https://none-ringtone-adaptor-materials.trycloudflare.com';
 
-  /// Try the primary URL and return it if reachable.
-  static Future<String> discoverUrl({Dio? dio}) async {
+  /// Try the given [preferredUrl] first, then fall back to [defaultUrl].
+  static Future<String> discoverUrl({Dio? dio, String? preferredUrl}) async {
     final client = dio ?? Dio();
     client.options.connectTimeout = const Duration(seconds: 3);
-    try {
-      final resp = await client.get('$defaultUrl/api/v1/health');
-      if (resp.statusCode == 200) return defaultUrl;
-    } catch (_) {}
-    return defaultUrl; // fallback even if health fails — let caller retry
+    final candidates = [
+      if (preferredUrl != null) preferredUrl,
+      defaultUrl,
+    ];
+    for (final url in candidates) {
+      try {
+        final resp = await client.get('$url/api/v1/health');
+        if (resp.statusCode == 200) return url;
+      } catch (_) {}
+    }
+    return candidates.first; // best effort
   }
 
   /// Check if the sandbox server is reachable.
