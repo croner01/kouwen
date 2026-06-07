@@ -1,11 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import '../../../providers.dart';
+import '../../../../providers.dart';
 import '../../../data/repositories.dart';
 import '../../../services/github_skill_loader.dart';
 import 'skill_provider.dart';
 import '../skill_market_screen.dart' show marketSkillsProvider;
-import '../../../engine/skill_parser.dart';
 
 /// Global scaffold messenger key for showing SnackBars from anywhere.
 final GlobalKey<ScaffoldMessengerState> installScaffoldKey =
@@ -79,17 +78,12 @@ class InstallState {
 
 class InstallerNotifier extends StateNotifier<InstallState> {
   final Ref _ref;
-  bool _cancelled = false;
 
   InstallerNotifier(this._ref) : super(InstallState.idle);
 
-  SkillRepository get _repo => SkillRepository(_ref.read(dbProvider));
-
-  /// Cancel a running installation. Already-installed skills are kept.
-  /// Note: does NOT reset state to idle — the running loop terminates
-  /// naturally via _cancelled flag on its next iteration check.
+  /// Cancel a running installation.
   void cancel() {
-    _cancelled = true;
+    state = InstallState.idle;
   }
 
   /// Reset state to idle (dismiss completion message).
@@ -97,8 +91,8 @@ class InstallerNotifier extends StateNotifier<InstallState> {
     state = InstallState.idle;
   }
 
-  /// Install all skills from a scan result in the background.
-  /// Returns immediately; progress is tracked via state.
+  /// Install all skills from a scan result via backend API.
+  /// The backend handles directory download, PVC storage, and pip deps.
   Future<void> installAll(
     GitHubScanResult result, {
     String? gitHubToken,
@@ -106,269 +100,86 @@ class InstallerNotifier extends StateNotifier<InstallState> {
   }) async {
     if (state.isInstalling) return;
 
-    _cancelled = false;
-    final loader = GitHubSkillLoader(
-      token: gitHubToken,
-      giteeToken: giteeToken,
-    );
-
-    final skills = result.skills.where((s) => s.isValid).toList();
-    final total = skills.length;
-    if (total == 0) {
-      state = InstallState(
-        status: InstallStatus.completed,
-        total: 0,
-        resultMessage: '没有可安装的技能',
-      );
-      _showResult();
-      return;
-    }
+    final repoName = result.repoName;
 
     state = InstallState(
       status: InstallStatus.installing,
-      total: total,
+      total: 1,
+      current: 0,
+      currentSkillName: repoName,
     );
 
-    // If this is a collection, install the collection parent first and
-    // track its ID so child skills are nested under it.
-    String? collectionId;
-    if (result.isCollection && result.collection != null) {
-      final c = result.collection!;
-      final exists = await _repo.skillExists(c.name);
-      if (exists) {
-        // Collection already installed — find its ID
-        final all = await _repo.getInstalledSkills();
-        final match = all.where((s) => s.name == c.name && s.isCollection).firstOrNull;
-        collectionId = match?.id;
-      }
-      if (collectionId == null) {
-        final collection = await _repo.installSkill(
-          name: c.name,
-          version: '1.0.0',
-          author: result.repoName,
-          category: c.category,
-          yamlContent: 'name: ${c.name}\ndescription: ${c.description}',
-          isCollection: true,
-          description: c.description,
-        );
-        collectionId = collection.id;
-      }
-    }
+    try {
+      final api = _ref.read(skillApiServiceProvider);
+      final installResult = await api.installSkill(repoName);
 
-    int success = 0;
-    int failed = 0;
-    int skipped = 0;
-    final failedNames = <String>[];
-    final failedSkills = <GitHubSkillResult>[];
-
-    for (int i = 0; i < skills.length; i++) {
-      if (_cancelled) return;
-
-      final skill = skills[i];
-      state = state.copyWith(
-        current: i + 1,
-        currentSkillName: skill.name,
-      );
-
-      try {
-        final yaml = await loader.downloadSkillContent(skill.url);
-        if (yaml == null) {
-          failed++;
-          failedNames.add(skill.name);
-          failedSkills.add(skill);
-          continue;
-        }
-
-        // Parse YAML to validate and get real skill name.
-        // If parsing fails, the file is not a valid skill → skip silently.
-        ParsedSkill parsed;
+      // Cache in local SQLite for yamlContent access
+      final repo = SkillRepository(_ref.read(dbProvider));
+      for (final s in installResult.skills) {
         try {
-          parsed = SkillParser.parse(yaml);
-        } catch (_) {
-          skipped++;
-          continue;
-        }
-
-        // Dedup — skip if a skill with the same name already exists
-        // For collection children, check within the same parent scope.
-        if (await _repo.skillExists(parsed.name, parentId: collectionId)) {
-          skipped++;
-          continue;
-        }
-
-        await _repo.installSkill(
-          name: parsed.name,
-          version: parsed.version,
-          author: skill.author ?? result.repoName,
-          category: parsed.category,
-          yamlContent: yaml,
-          parentId: collectionId,
-        );
-        success++;
-      } catch (_) {
-        failed++;
-        failedNames.add(skill.name);
-        failedSkills.add(skill);
+          final exists = await repo.skillExists(s.name);
+          if (!exists) {
+            await repo.installSkill(
+              name: s.name,
+              version: '1.0.0',
+              author: repoName,
+              category: '通用',
+              yamlContent: '',
+              description: '后端安装 · ${s.files} 个文件',
+            );
+          }
+        } catch (_) {}
       }
+
+      _ref.invalidate(installedSkillsProvider);
+      _ref.invalidate(topLevelSkillsProvider);
+      _ref.invalidate(marketSkillsProvider);
+
+      final names = installResult.skills.map((s) => s.name).join(', ');
+      state = InstallState(
+        status: InstallStatus.completed,
+        total: 1,
+        current: 1,
+        successCount: installResult.skills.length,
+        failCount: 0,
+        resultMessage: '安装完成: $names',
+      );
+    } catch (e) {
+      state = InstallState(
+        status: InstallStatus.completed,
+        total: 1,
+        current: 0,
+        successCount: 0,
+        failCount: 1,
+        resultMessage:
+            '安装失败: ${e.toString().replaceAll("Exception: ", "")}',
+      );
     }
-
-    if (_cancelled) return;
-
-    // Invalidate providers so UI refreshes
-    _ref.invalidate(installedSkillsProvider);
-    _ref.invalidate(topLevelSkillsProvider);
-    _ref.invalidate(marketSkillsProvider);
-
-    final parts = <String>[];
-    if (success > 0) parts.add('$success 成功');
-    if (skipped > 0) parts.add('$skipped 跳过(非技能/重复)');
-    if (failed > 0) parts.add('$failed 失败');
-    final msg = parts.isNotEmpty
-        ? parts.join('，')
-        : '没有可安装的技能';
-
-    state = InstallState(
-      status: InstallStatus.completed,
-      total: total,
-      current: total,
-      successCount: success,
-      failCount: failed + skipped,
-      failedNames: failedNames,
-      failedSkills: failedSkills,
-      resultMessage: msg,
-      collectionParentId: collectionId,
-    );
 
     _showResult();
 
-    // Keep state visible for user to retry failed skills
-    if (failedSkills.isEmpty) {
-      Future.delayed(const Duration(seconds: 4), () {
-        if (state.status == InstallStatus.completed) {
-          state = InstallState.idle;
-        }
-      });
-    }
+    Future.delayed(const Duration(seconds: 4), () {
+      if (state.status == InstallStatus.completed) {
+        state = InstallState.idle;
+      }
+    });
   }
 
   /// Retry all previously failed skills.
   Future<void> retryFailed() async {
     if (state.failedSkills.isEmpty) return;
-
-    _cancelled = false;
-    final loader = GitHubSkillLoader(
-      token: await _ref.read(secureStorageProvider).getGitHubToken(),
-      giteeToken: await _ref.read(secureStorageProvider).read(key: 'gitee_token'),
-    );
-
-    final skills = state.failedSkills.where((s) => s.isValid).toList();
-    final total = skills.length;
-
-    state = InstallState(
-      status: InstallStatus.installing,
-      total: total,
-    );
-
-    // Resolve the collection parent for nested skills.
-    // Use the ID saved from the original installAll(), or try to find one
-    // by author if the state was reset between sessions.
-    String? collectionId = state.collectionParentId;
-    if (collectionId == null && skills.isNotEmpty) {
-      final author = skills.first.author;
-      if (author != null) {
-        final all = await _repo.getInstalledSkills();
-        final match = all.where((s) => s.author == author && s.isCollection).firstOrNull;
-        collectionId = match?.id;
-      }
-    }
-
-    int success = 0;
-    int failed = 0;
-    final failedNames = <String>[];
-    final failedSkills = <GitHubSkillResult>[];
-
-    for (int i = 0; i < skills.length; i++) {
-      if (_cancelled) return;
-
-      final skill = skills[i];
-      state = state.copyWith(
-        current: i + 1,
-        currentSkillName: skill.name,
-      );
-
-      try {
-        final yaml = await loader.downloadSkillContent(skill.url);
-        if (yaml == null) {
-          failed++;
-          failedNames.add(skill.name);
-          failedSkills.add(skill);
-          continue;
-        }
-
-        ParsedSkill parsed;
-        try {
-          parsed = SkillParser.parse(yaml);
-        } catch (_) {
-          // Still invalid — count as failed this time
-          failed++;
-          failedNames.add(skill.name);
-          failedSkills.add(skill);
-          continue;
-        }
-
-        // Dedup within the same scope as the original install
-        if (await _repo.skillExists(parsed.name, parentId: collectionId)) {
-          continue;
-        }
-
-        await _repo.installSkill(
-          name: parsed.name,
-          version: parsed.version,
-          author: skill.author,
-          category: parsed.category,
-          yamlContent: yaml,
-          parentId: collectionId,
-        );
-        success++;
-      } catch (_) {
-        failed++;
-        failedNames.add(skill.name);
-        failedSkills.add(skill);
-      }
-    }
-
-    if (_cancelled) return;
-
-    _ref.invalidate(installedSkillsProvider);
-    _ref.invalidate(topLevelSkillsProvider);
-    _ref.invalidate(marketSkillsProvider);
-
-    final parts = <String>[];
-    if (success > 0) parts.add('$success 成功');
-    if (failed > 0) parts.add('$failed 仍失败');
-    final msg = parts.isNotEmpty ? parts.join('，') : '没有可重试的技能';
-
+    // With backend install, retry means re-installing from the market.
     state = InstallState(
       status: InstallStatus.completed,
-      total: total,
-      current: total,
-      successCount: success,
-      failCount: failed,
-      failedNames: failedNames,
-      failedSkills: failedSkills,
-      resultMessage: msg,
-      collectionParentId: collectionId,
+      total: 0,
+      resultMessage: '请从市场重新安装',
     );
-
     _showResult();
-
-    if (failedSkills.isEmpty) {
-      Future.delayed(const Duration(seconds: 4), () {
-        if (state.status == InstallStatus.completed) {
-          state = InstallState.idle;
-        }
-      });
-    }
+    Future.delayed(const Duration(seconds: 4), () {
+      if (state.status == InstallStatus.completed) {
+        state = InstallState.idle;
+      }
+    });
   }
 
   void _showResult() {

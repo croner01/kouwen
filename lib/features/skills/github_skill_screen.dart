@@ -2,8 +2,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../services/github_skill_loader.dart';
-import '../../engine/skill_parser.dart';
-import '../../data/repositories.dart';
 import 'providers/skill_provider.dart';
 import 'skill_market_screen.dart' show marketSkillsProvider;
 import '../../../providers.dart';
@@ -119,61 +117,38 @@ class _GitHubSkillScreenState
       return;
     }
 
-    final token = await ref.read(secureStorageProvider).getGitHubToken();
-    final loader = GitHubSkillLoader(token: token);
-    final yaml = await loader.downloadSkillContent(skill.url);
-    if (yaml == null) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-              content: Text('下载失败，请检查网络'),
-              backgroundColor: Colors.red),
-        );
-      }
-      return;
-    }
+    final repoUrl = _urlCtrl.text.trim();
+    if (repoUrl.isEmpty) return;
 
-    // Parse to get skill name
-    String skillName = skill.path.split('/').last;
-    String category = skill.category ?? '通用';
     try {
-      final parsed = SkillParser.parse(yaml);
-      skillName = parsed.name;
-      category = parsed.category;
-    } catch (_) {
-      // Use file-name derived name
-    }
+      setState(() => _isLoading = true);
+      final api = ref.read(skillApiServiceProvider);
+      await api.installSkill(repoUrl);
 
-    final repo = SkillRepository(ref.read(dbProvider));
-    final installed = await repo.getInstalledSkills();
-    if (installed.any((s) => s.name == skillName)) {
+      ref.invalidate(installedSkillsProvider);
+      ref.invalidate(topLevelSkillsProvider);
+      ref.invalidate(marketSkillsProvider);
+
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('$skillName 已安装')),
+          SnackBar(
+            content: Text('${skill.name} 安装成功'),
+            backgroundColor: Colors.green,
+          ),
         );
       }
-      return;
-    }
-
-    await repo.installSkill(
-      name: skillName,
-      version: '1.0.0',
-      author: null,
-      category: category,
-      yamlContent: yaml,
-    );
-
-    ref.invalidate(installedSkillsProvider);
-    ref.invalidate(topLevelSkillsProvider);
-    ref.invalidate(marketSkillsProvider);
-
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('$skillName 安装成功'),
-          backgroundColor: Colors.green,
-        ),
-      );
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+                '安装失败: ${e.toString().replaceAll("Exception: ", "")}'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _isLoading = false);
     }
   }
 

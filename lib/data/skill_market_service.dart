@@ -1,12 +1,8 @@
 import 'dart:convert';
-import 'package:dio/dio.dart';
 import 'package:flutter/services.dart' show rootBundle;
-import 'models.dart';
 import 'repositories.dart';
 import 'database.dart';
-import '../services/github_skill_loader.dart';
-import '../services/secure_storage_service.dart';
-import '../engine/skill_parser.dart';
+import '../services/skill_api_service.dart';
 
 /// A skill entry in the market catalog
 class MarketSkill {
@@ -26,6 +22,8 @@ class MarketSkill {
   bool isInstalled;
   final bool isCollection;
   final int? childCount;
+  String? id; // Backend skill ID, for uninstall
+  List<String> pythonDeps; // pip dependency list from backend
 
   MarketSkill({
     required this.name,
@@ -44,6 +42,8 @@ class MarketSkill {
     this.isInstalled = false,
     this.isCollection = false,
     this.childCount,
+    this.id,
+    this.pythonDeps = const [],
   });
 
   factory MarketSkill.fromJson(Map<String, dynamic> json) {
@@ -64,6 +64,49 @@ class MarketSkill {
       isCollection: json['is_collection'] as bool? ?? false,
       childCount: json['child_count'] as int?,
     );
+  }
+
+  /// Create a MarketSkill from a backend API response.
+  /// Used to mark online-discovered skills as installed.
+  factory MarketSkill.fromBackendSkill(BackendSkill backend) {
+    return MarketSkill(
+      name: backend.name,
+      displayName: backend.name,
+      version: backend.version,
+      author: backend.author ?? '',
+      description: backend.category,
+      icon: _iconForCategory(backend.category),
+      category: backend.category,
+      tags: [],
+      file: '',
+      sourceRepo: backend.sourceRepo,
+      downloads: 0,
+      rating: 0,
+      isInstalled: true,
+      id: backend.id,
+      pythonDeps: backend.pythonDeps,
+    );
+  }
+
+  static String _iconForCategory(String cat) {
+    switch (cat) {
+      case '科技':
+        return '\u{1F4BB}';
+      case '设计':
+        return '\u{1F3A8}';
+      case '文档':
+        return '\u{1F4C4}';
+      case '财经':
+        return '\u{1F4C8}';
+      case '法律':
+        return '\u{2696}';
+      case '医疗':
+        return '\u{1F3E5}';
+      case '教育':
+        return '\u{1F393}';
+      default:
+        return '\u{1F916}';
+    }
   }
 }
 
@@ -95,119 +138,70 @@ class SkillMarketService {
     return skills;
   }
 
-  /// Install a skill from the market — downloads real content from GitHub/Gitee.
-  /// For collections, scans the repo and installs all child skills under a parent.
-  static Future<void> installSkill(MarketSkill skill) async {
-    final repo = SkillRepository(AppDatabase.instance);
-
-    // Guard against duplicate installs
-    final installed = await repo.getInstalledSkills();
-    if (installed.any((s) => s.name == skill.name)) {
-      throw Exception('${skill.displayName} 已安装');
+  /// Install a skill via backend API. Backend handles full directory download,
+  /// PVC storage, and pip dependency installation.
+  /// Requires [apiService] for the backend call and optionally saves a local
+  /// cache record for yamlContent access.
+  static Future<InstallResult> installSkill(
+    MarketSkill skill, {
+    required SkillApiService apiService,
+  }) async {
+    if (skill.sourceRepo == null) {
+      throw Exception('该技能没有来源仓库');
     }
-
-    if (skill.isCollection && skill.sourceRepo != null) {
-      // Install entire collection
-      await _installCollection(skill, repo);
-      skill.isInstalled = true;
-      return;
-    }
-
-    if (skill.sourceUrl == null) {
-      throw Exception('该技能没有来源');
-    }
-
-    final dio = Dio();
-    dio.options.connectTimeout = const Duration(seconds: 10);
-    dio.options.receiveTimeout = const Duration(seconds: 30);
-    final resp = await dio.get(skill.sourceUrl!);
-    if (resp.statusCode != 200 || resp.data == null) {
-      throw Exception('下载失败 (${resp.statusCode})');
-    }
-
-    await repo.installSkill(
-      name: skill.name,
-      version: skill.version,
-      author: skill.author,
-      category: skill.category,
-      yamlContent: resp.data.toString(),
-    );
+    // Backend handles everything: scan, download, PVC, pip, PostgreSQL
+    final result = await apiService.installSkill(skill.sourceRepo!);
     skill.isInstalled = true;
-  }
 
-  /// Install a collection: scan repo, create parent, install all children
-  static Future<void> _installCollection(
-      MarketSkill skill, SkillRepository repo) async {
-    final parts = skill.sourceRepo!.split('/');
-    if (parts.length < 2) throw Exception('仓库地址格式错误');
-
-    final storage = SecureStorageService();
-    final giteeToken = await storage.read(key: 'gitee_token');
-    final loader = GitHubSkillLoader(giteeToken: giteeToken);
-    final result = await loader.scanRepo(skill.sourceRepo!);
-    if (result.error != null) throw Exception(result.error);
-    if (!result.isCollection || result.collection == null) {
-      throw Exception('该仓库不是技能集合');
-    }
-
-    final coll = result.collection!;
-
-    // Create parent collection
-    final parent = await repo.installSkill(
-      name: coll.name,
-      version: '1.0.0',
-      author: coll.repoName,
-      category: coll.category,
-      yamlContent: '',
-      isCollection: true,
-      description: coll.description,
-    );
-
-    // Install each child
-    for (final child in coll.childSkills) {
-      final yaml = await loader.downloadSkillContent(child.url);
-      if (yaml == null) continue;
-
-      final childName = child.path
-          .split('/')
-          .reversed
-          .skip(1)
-          .firstOrNull
-          ?.replaceAll('-', ' ')
-          .replaceAll('_', ' ') ?? child.name;
-      final childKey = '${coll.name}/$childName';
-
-      String cat = child.category ?? coll.category;
+    // Also save to local SQLite as cache (for yamlContent access in chat/detail)
+    if (result.skills.isNotEmpty) {
       try {
-        final parsed = SkillParser.parse(yaml);
-        cat = parsed.category;
-      } catch (_) {}
-
-      await repo.installSkill(
-        name: childKey,
-        version: '1.0.0',
-        author: coll.repoName,
-        category: cat,
-        yamlContent: yaml,
-        parentId: parent.id,
-      );
+        final repo = SkillRepository(AppDatabase.instance);
+        for (final s in result.skills) {
+          final exists = await repo.skillExists(s.name);
+          if (exists) continue;
+          await repo.installSkill(
+            name: s.name,
+            version: '1.0.0',
+            author: skill.author,
+            category: skill.category,
+            yamlContent: '', // Backend has the real content on PVC
+            description: '通过后端安装 · ${s.files} 个文件',
+          );
+        }
+      } catch (_) {
+        // Local cache failure is non-fatal — backend is primary
+      }
     }
+
+    clearCache();
+    return result;
   }
 
-  /// Uninstall a skill. Silently succeeds if already uninstalled.
-  static Future<void> uninstallSkill(MarketSkill skill) async {
-    final repo = SkillRepository(AppDatabase.instance);
-    final installed = await repo.getInstalledSkills();
-    Skill? match;
-    try {
-      match = installed.firstWhere((s) => s.name == skill.name);
-    } catch (_) {
-      // Already uninstalled — nothing to do
-      skill.isInstalled = false;
-      return;
+  /// Uninstall a skill via backend API.
+  static Future<void> uninstallSkill(
+    MarketSkill skill, {
+    required SkillApiService apiService,
+  }) async {
+    if (skill.id == null) {
+      throw Exception('无法卸载：缺少技能 ID');
     }
-    await repo.deleteSkill(match.id);
+    await apiService.deleteSkill(skill.id!);
     skill.isInstalled = false;
+
+    // Also remove from local cache
+    try {
+      final repo = SkillRepository(AppDatabase.instance);
+      final installed = await repo.getInstalledSkills();
+      final match = installed.where((s) => s.name == skill.name).firstOrNull;
+      if (match != null) {
+        await repo.deleteSkill(match.id);
+      }
+    } catch (_) {
+      // Local cache cleanup failure is non-fatal
+    }
+
+    clearCache();
   }
 
   /// Search skills by name, description, or tags

@@ -12,37 +12,57 @@ import 'github_skill_screen.dart';
 final marketSkillsProvider = FutureProvider<List<MarketSkill>>((ref) async {
   final skills = <MarketSkill>[];
 
-  // 1. Built-in / installed top-level skills (collections + standalone, no children)
+  // 1. Fetch installed skills from backend API
+  Set<String> installedNames = {};
   try {
-    final repo = SkillRepository(ref.read(dbProvider));
-    final installed = await repo.getTopLevelSkills();
-    for (final s in installed) {
-      skills.add(MarketSkill(
-        name: s.name, displayName: s.name, version: s.version,
-        author: s.author ?? '', description: s.category, icon: '📦',
-        category: s.category, tags: [], file: '', downloads: 0, rating: 0,
-        isInstalled: true,
-      ));
+    final api = ref.watch(skillApiServiceProvider);
+    final backendSkills = await api.listSkills();
+    for (final bs in backendSkills) {
+      final ms = MarketSkill.fromBackendSkill(bs);
+      skills.add(ms);
+      installedNames.add(bs.name);
     }
-  } catch (_) {}
+  } catch (_) {
+    // Backend unreachable — fall back to local SQLite
+    try {
+      final repo = SkillRepository(ref.read(dbProvider));
+      final installed = await repo.getTopLevelSkills();
+      for (final s in installed) {
+        skills.add(MarketSkill(
+          name: s.name,
+          displayName: s.name,
+          version: s.version,
+          author: s.author ?? '',
+          description: s.category,
+          icon: '📦',
+          category: s.category,
+          tags: [],
+          file: '',
+          downloads: 0,
+          rating: 0,
+          isInstalled: true,
+          id: s.id,
+        ));
+        installedNames.add(s.name);
+      }
+    } catch (_) {}
+  }
 
-  // 2. Try online sources (silent, non-blocking)
+  // 2. Discover online skills from Gitee sources
   try {
     final token = await ref.read(secureStorageProvider).getGitHubToken();
     final giteeToken = await ref.read(secureStorageProvider).read(key: 'gitee_token');
     final ghSource = GitHubSkillSource(token: token, giteeToken: giteeToken);
-    final names = skills.map((s) => s.name).toSet();
 
-    // Fetch from all sources (official + user-added custom)
-    // Use ref.watch (not ref.read) so market auto-refreshes when sources change
     final sources = await ref.watch(skillSourcesProvider.future);
     for (final source in sources) {
       try {
         final online = await ghSource.fetchFromSource(source);
         for (final s in online) {
-          if (!names.contains(s.name)) {
+          if (!installedNames.contains(s.name)) {
+            s.isInstalled = false;
             skills.add(s);
-            names.add(s.name);
+            installedNames.add(s.name);
           }
         }
       } catch (_) {
@@ -59,7 +79,10 @@ final marketSkillsProvider = FutureProvider<List<MarketSkill>>((ref) async {
 
 final skillSourcesProvider =
     FutureProvider<List<SkillSource>>((ref) async {
-  final sources = <SkillSource>[GitHubSkillSource.official];
+  final sources = <SkillSource>[
+    GitHubSkillSource.official,
+    GitHubSkillSource.tradingAgentsPlugin,
+  ];
   // Load user-added custom sources
   try {
     final store = SkillSourceStore(ref.read(secureStorageProvider));
@@ -220,14 +243,21 @@ class _SkillMarketScreenState extends ConsumerState<SkillMarketScreen> {
                         itemCount: displaySkills.length,
                         itemBuilder: (_, i) {
                           final ms = displaySkills[i];
+                          final api = ref.read(skillApiServiceProvider);
                           return _MarketSkillTile(
                             skill: ms,
                             onInstall: () async {
-                              await SkillMarketService.installSkill(ms);
+                              await SkillMarketService.installSkill(
+                                ms,
+                                apiService: api,
+                              );
                               ref.invalidate(marketSkillsProvider);
                             },
                             onUninstall: () async {
-                              await SkillMarketService.uninstallSkill(ms);
+                              await SkillMarketService.uninstallSkill(
+                                ms,
+                                apiService: api,
+                              );
                               ref.invalidate(marketSkillsProvider);
                             },
                             onOpen: () {
