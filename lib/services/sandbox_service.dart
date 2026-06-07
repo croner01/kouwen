@@ -31,9 +31,9 @@ class SandboxResult {
 
 /// Calls the KouWen Sandbox server to execute Python/Bash scripts.
 ///
-/// The sandbox runs on a remote server (192.168.111.6:8080) with resource
-/// limits and timeout protection. Data packages (baostock, akshare) are
-/// pre-installed for A-share/global market data fetching.
+/// The sandbox runs as a k8s pod in the kouwen namespace (NodePort 30081).
+/// Data packages (baostock, akshare) are pre-installed for A-share/global
+/// market data fetching. Accessed via the Cloudflare tunnel or server URL.
 class SandboxService {
   final Dio _dio;
   final String _baseUrl;

@@ -153,5 +153,10 @@ class AgentService {
         }
       }
     }
+
+    // Flush: stream ended with unparsed data — connection was interrupted
+    if (buffer.trim().isNotEmpty) {
+      yield AgentErrorEvent('连接中断，回复可能不完整');
+    }
   }
 }
