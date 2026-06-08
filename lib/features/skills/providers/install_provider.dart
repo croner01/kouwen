@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:dio/dio.dart';
 import '../../../../providers.dart';
 import '../../../data/repositories.dart';
 import '../../../services/github_skill_loader.dart';
@@ -200,6 +201,18 @@ class InstallerNotifier extends StateNotifier<InstallState> {
         resultMessage: '安装完成: $names',
       );
     } catch (e) {
+      String errorMsg = e.toString().replaceAll("Exception: ", "");
+      // Extract response body from DioException to show backend's error detail
+      if (e is DioException && e.response?.data != null) {
+        final data = e.response!.data;
+        if (data is Map) {
+          errorMsg = (data['detail'] ?? data['message'] ?? data.toString()).toString();
+        } else {
+          errorMsg = data.toString();
+        }
+        // Truncate very long responses (e.g. HTML error pages)
+        if (errorMsg.length > 200) errorMsg = errorMsg.substring(0, 200);
+      }
       state = InstallState(
         status: InstallStatus.completed,
         total: 1,
@@ -209,7 +222,7 @@ class InstallerNotifier extends StateNotifier<InstallState> {
         failedNames: [repoName],
         lastGiteeToken: giteeToken,
         resultMessage:
-            '安装失败: ${e.toString().replaceAll("Exception: ", "")}',
+            '安装失败: $errorMsg',
       );
     }
 
@@ -266,6 +279,16 @@ class InstallerNotifier extends StateNotifier<InstallState> {
         resultMessage: '重试成功: $names',
       );
     } catch (e) {
+      String errorMsg = e.toString().replaceAll("Exception: ", "");
+      if (e is DioException && e.response?.data != null) {
+        final data = e.response!.data;
+        if (data is Map) {
+          errorMsg = (data['detail'] ?? data['message'] ?? data.toString()).toString();
+        } else {
+          errorMsg = data.toString();
+        }
+        if (errorMsg.length > 200) errorMsg = errorMsg.substring(0, 200);
+      }
       state = InstallState(
         status: InstallStatus.completed,
         total: 1,
@@ -274,7 +297,7 @@ class InstallerNotifier extends StateNotifier<InstallState> {
         failCount: 1,
         failedNames: [repoName],
         resultMessage:
-            '重试失败: ${e.toString().replaceAll("Exception: ", "")}',
+            '重试失败: $errorMsg',
       );
     }
     _showResult();
