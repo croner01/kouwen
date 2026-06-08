@@ -150,6 +150,13 @@ async def execute_web_search(query: str, count: int = 5) -> dict:
         return {"results": [], "error": str(e), "query": query}
 
 
+def _safe_get(obj, name: str, default=''):
+    """Get attribute from Pydantic model or dict-like object safely."""
+    if hasattr(obj, 'get') and callable(getattr(obj, 'get')):
+        return obj.get(name, default)
+    return getattr(obj, name, default)
+
+
 async def agent_loop(
     api_key: str,
     base_url: str,
@@ -203,30 +210,29 @@ async def agent_loop(
         async for sdk_event in stream:
             if sdk_event.type == "content_block_start":
                 cb = sdk_event.content_block
-                # Typed access (SDK >= 0.49); fallback to dict-like
-                cb_type = cb.type if hasattr(cb, 'type') else cb.get('type', '')
+                cb_type = _safe_get(cb, 'type', '')
                 if cb_type == "text":
-                    initial = getattr(cb, 'text', None) or cb.get('text', '')
+                    initial = _safe_get(cb, 'text', '')
                     text_accumulator = initial
                     if initial:
                         yield sse_event("text_delta", {"content": initial})
                 elif cb_type == "tool_use":
                     current_tool_use = {
-                        "id": getattr(cb, 'id', None) or cb.get('id', ''),
-                        "name": getattr(cb, 'name', None) or cb.get('name', ''),
+                        "id": _safe_get(cb, 'id', ''),
+                        "name": _safe_get(cb, 'name', ''),
                         "_partial": "",
                     }
 
             elif sdk_event.type == "content_block_delta":
                 delta = sdk_event.delta
-                dt = delta.type if hasattr(delta, 'type') else delta.get('type', '')
+                dt = _safe_get(delta, 'type', '')
                 if dt == "text_delta":
-                    chunk = getattr(delta, 'text', None) or delta.get('text', '')
+                    chunk = _safe_get(delta, 'text', '')
                     text_accumulator += chunk
                     yield sse_event("text_delta", {"content": chunk})
                 elif dt == "input_json_delta":
                     if current_tool_use is not None:
-                        pj = getattr(delta, 'partial_json', None) or delta.get('partial_json', '')
+                        pj = _safe_get(delta, 'partial_json', '')
                         current_tool_use["_partial"] += pj
 
             elif sdk_event.type == "content_block_stop":
