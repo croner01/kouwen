@@ -70,7 +70,7 @@ class _SkillEditScreenState extends ConsumerState<SkillEditScreen> {
       try {
         final api = ref.read(skillApiServiceProvider);
         final backendSkills = await api.listSkills();
-        final bs = backendSkills.where((s) => s.name == skill.name).firstOrNull;
+        final bs = backendSkills.where((s) => s.name == skill!.name).firstOrNull;
         if (bs != null && bs.yamlContent.isNotEmpty) {
           await repo.updateSkillYamlContent(widget.skillId, bs.yamlContent);
           skill = await repo.getSkillById(widget.skillId);
@@ -78,25 +78,27 @@ class _SkillEditScreenState extends ConsumerState<SkillEditScreen> {
       } catch (_) {}
     }
 
+    if (skill == null || !mounted) return; // re-check after potential reassignment
+
     ParsedSkill? parsed;
     try {
-      parsed = SkillParser.parse(skill?.yamlContent ?? '');
+      parsed = SkillParser.parse(skill.yamlContent);
     } catch (_) {}
 
     setState(() {
       _skill = skill;
       _loading = false;
-      _nameCtrl.text = parsed?.name ?? skill.name;
-      _versionCtrl.text = parsed?.version ?? skill.version;
+      _nameCtrl.text = parsed?.name ?? skill!.name;
+      _versionCtrl.text = parsed?.version ?? skill!.version;
       _iconCtrl.text = parsed?.icon ?? '🤖';
-      _category = parsed?.category ?? skill.category;
-      _descCtrl.text = parsed?.description ?? skill.description ?? '';
+      _category = parsed?.category ?? skill!.category;
+      _descCtrl.text = parsed?.description ?? skill!.description ?? '';
       _welcomeCtrl.text = parsed?.welcomeMessage ?? '';
       _promptCtrl.text = parsed?.systemPrompt ?? '';
       _sampleQuestions
         ..clear()
         ..addAll(parsed?.sampleQuestions ?? []);
-      _yamlCtrl.text = skill.yamlContent;
+      _yamlCtrl.text = skill!.yamlContent;
     });
   }
 
