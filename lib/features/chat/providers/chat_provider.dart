@@ -441,6 +441,12 @@ class ChatNotifier extends StateNotifier<ChatState> {
           errMsg = '服务器响应超时，请稍后重试';
         } else if (e.type == DioExceptionType.connectionError) {
           errMsg = '无法连接到服务器，请检查网络连接';
+        } else if (e.response?.statusCode == 524) {
+          errMsg = '服务器处理超时（Cloudflare 网关超时），请稍后重试或缩短回复长度';
+        } else if (e.response?.statusCode == 502) {
+          errMsg = '服务器暂时不可用（网关错误），请稍后重试';
+        } else if (e.response?.statusCode == 503) {
+          errMsg = '服务器暂时不可用（服务过载），请稍后重试';
         } else if (e.response?.data != null) {
           final data = e.response!.data;
           if (data is Map) {
