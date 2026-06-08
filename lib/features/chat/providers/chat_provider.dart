@@ -19,6 +19,11 @@ class ChatState {
   final List<SkillMatch> suggestedSkills;
   final String streamingContent;
   final bool webSearchEnabled;
+  final bool streamInterrupted;   // true when SSE ended without done/error
+  final bool isLoadingConversation; // true while loading a history conversation
+  final bool compactSuggested;      // true when turn count >= threshold
+  final bool isCompacting;          // true during summary generation
+  final int? dismissedCompactAtTurnCount; // user dismissed at this turn, for cool-down
 
   const ChatState({
     this.messages = const [],
@@ -29,6 +34,11 @@ class ChatState {
     this.suggestedSkills = const [],
     this.streamingContent = '',
     this.webSearchEnabled = false,
+    this.streamInterrupted = false,
+    this.isLoadingConversation = false,
+    this.compactSuggested = false,
+    this.isCompacting = false,
+    this.dismissedCompactAtTurnCount,
   });
 
   ChatState copyWith({
@@ -40,6 +50,11 @@ class ChatState {
     List<SkillMatch>? suggestedSkills,
     String? streamingContent,
     bool? webSearchEnabled,
+    bool? streamInterrupted,
+    bool? isLoadingConversation,
+    bool? compactSuggested,
+    bool? isCompacting,
+    Object? dismissedCompactAtTurnCount = _sentinel,
   }) {
     return ChatState(
       messages: messages ?? this.messages,
@@ -50,6 +65,13 @@ class ChatState {
       suggestedSkills: suggestedSkills ?? this.suggestedSkills,
       streamingContent: streamingContent ?? this.streamingContent,
       webSearchEnabled: webSearchEnabled ?? this.webSearchEnabled,
+      streamInterrupted: streamInterrupted ?? this.streamInterrupted,
+      isLoadingConversation: isLoadingConversation ?? this.isLoadingConversation,
+      compactSuggested: compactSuggested ?? this.compactSuggested,
+      isCompacting: isCompacting ?? this.isCompacting,
+      dismissedCompactAtTurnCount: dismissedCompactAtTurnCount == _sentinel
+          ? this.dismissedCompactAtTurnCount
+          : dismissedCompactAtTurnCount as int?,
     );
   }
   static const _sentinel = Object();
@@ -79,16 +101,19 @@ class ChatNotifier extends StateNotifier<ChatState> {
       skill: null,
       messages: [],
       error: null,
+      streamInterrupted: false,
+      isLoadingConversation: false,
     );
   }
 
   /// Load an existing conversation
   Future<void> loadConversation(String conversationId) async {
+    state = state.copyWith(isLoadingConversation: true, error: null);
     try {
       final conversation =
           await _conversationRepo.getConversationById(conversationId);
       if (conversation == null) {
-        state = state.copyWith(error: '对话未找到');
+        state = state.copyWith(error: '对话未找到', isLoadingConversation: false);
         return;
       }
       final messages =
@@ -116,11 +141,14 @@ class ChatNotifier extends StateNotifier<ChatState> {
         skill: skill,
         messages: messages,
         error: null,
+        isLoadingConversation: false,
+        compactSuggested: false,
+        dismissedCompactAtTurnCount: null,
       );
     } catch (e) {
       // ignore: avoid_print
       print('loadConversation error: $e');
-      state = state.copyWith(error: '对话加载失败: ${e.toString().replaceAll(RegExp(r'Exception:\s*|DioException\s*'), '').trim()}');
+      state = state.copyWith(error: '对话加载失败: ${e.toString().replaceAll(RegExp(r'Exception:\s*|DioException\s*'), '').trim()}', isLoadingConversation: false);
     }
   }
 
@@ -128,13 +156,21 @@ class ChatNotifier extends StateNotifier<ChatState> {
   Future<void> loadSkill(String skillId) async {
     final skillData = await _skillRepo.getSkillById(skillId);
     if (skillData == null) {
+      // ignore: avoid_print
+      print('loadSkill: skill not found by id=$skillId (${skillId.length} chars)');
       state = state.copyWith(error: '技能未找到');
       return;
     }
 
     // Collection parents have no yamlContent — can't be loaded directly
-    if (skillData.isCollection || skillData.yamlContent.isEmpty) {
+    if (skillData.isCollection) {
       state = state.copyWith(error: '技能集合无法直接加载，请选择具体子技能');
+      return;
+    }
+
+    // Skill with empty content — backend didn't return SKILL.md content
+    if (skillData.yamlContent.isEmpty) {
+      state = state.copyWith(error: '技能内容为空，请尝试重新安装');
       return;
     }
 
@@ -174,8 +210,12 @@ class ChatNotifier extends StateNotifier<ChatState> {
       state = state.copyWith(error: '正在回复中，请稍候');
       return;
     }
+    if (state.isCompacting) {
+      state = state.copyWith(error: '正在压缩对话中，请稍候');
+      return;
+    }
     // Set loading immediately to prevent concurrent sends
-    state = state.copyWith(isLoading: true, error: null);
+    state = state.copyWith(isLoading: true, error: null, streamInterrupted: false);
 
     final modelConfig = await _modelManager.getDefaultConfig();
     if (modelConfig == null) {
@@ -249,13 +289,25 @@ class ChatNotifier extends StateNotifier<ChatState> {
       final systemPrompt = (state.skill?.systemPrompt ?? _defaultSystemPrompt());
 
       // Build conversation messages (no context injection — Agent handles tools)
+      // Limit history to prevent unbounded context growth over many turns.
+      const int maxHistoryMessages = 60;
       final agentMessages = <Map<String, String>>[];
-      for (final msg in previousMessages) {
-        if (msg.role == MessageRole.system) continue;
-        agentMessages.add({
-          'role': msg.role.name,
-          'content': msg.content,
-        });
+      final nonSystemMsgs =
+          previousMessages.where((m) => m.role != MessageRole.system).toList();
+      var recentMsgs = nonSystemMsgs.length > maxHistoryMessages
+          ? nonSystemMsgs.sublist(nonSystemMsgs.length - maxHistoryMessages)
+          : nonSystemMsgs;
+
+      // Always include the compact summary (marked with 📋 prefix)
+      if (nonSystemMsgs.length > maxHistoryMessages) {
+        final summaryIdx = nonSystemMsgs.indexWhere((m) => m.content.startsWith('📋'));
+        if (summaryIdx >= 0 && !recentMsgs.any((m) => m.id == nonSystemMsgs[summaryIdx].id)) {
+          recentMsgs = [nonSystemMsgs[summaryIdx], ...recentMsgs];
+        }
+      }
+
+      for (final msg in recentMsgs) {
+        agentMessages.add({'role': msg.role.name, 'content': msg.content});
       }
       agentMessages.add({'role': 'user', 'content': content});
 
@@ -281,25 +333,41 @@ class ChatNotifier extends StateNotifier<ChatState> {
       );
 
       String fullResponse = '';
+      final currentSkill = state.skill; // capture for tool label context
+      bool gotFinalEvent = false;
       await for (final event in stream) {
         if (event is TextDeltaEvent) {
           fullResponse += event.content;
           state = state.copyWith(streamingContent: fullResponse);
         } else if (event is ToolUseEvent) {
-          final toolLabel = _toolLabel(event.name, event.input);
-          fullResponse += '\n\n> 🔧 $toolLabel\n\n';
+          final toolLabel = _toolLabel(event.name, event.input, skill: currentSkill);
+          fullResponse += '\n\n> $toolLabel\n\n';
           state = state.copyWith(streamingContent: fullResponse);
         } else if (event is ToolResultEvent) {
           // Tool results are internal — handled by Agent
         } else if (event is AgentDoneEvent) {
+          gotFinalEvent = true;
           if (event.truncated) {
-            fullResponse += '\n\n> ⚠️ 达到最大工具调用次数，回复可能不完整。';
+            final msg = switch (event.truncationReason) {
+              'max_tokens' => '⚠️ 回复达到 Token 上限，内容可能被截断。',
+              'max_turns' => '⚠️ 达到最大工具调用次数，回复可能不完整。',
+              _ => '⚠️ 回复被截断，可能不完整。',
+            };
+            fullResponse += '\n\n> $msg\n\n';
             state = state.copyWith(streamingContent: fullResponse);
           }
         } else if (event is AgentErrorEvent) {
+          gotFinalEvent = true;
           fullResponse += '\n\n> ❌ 错误: ${event.message}';
           state = state.copyWith(streamingContent: fullResponse);
         }
+      }
+
+      // Stream ended without a final done/error event = interrupted
+      final wasInterrupted = !gotFinalEvent && fullResponse.isNotEmpty;
+      if (wasInterrupted) {
+        fullResponse += '\n\n> ⚠️ 输出中断，回复可能不完整。';
+        state = state.copyWith(streamingContent: fullResponse);
       }
 
       if (fullResponse.isNotEmpty) {
@@ -312,10 +380,15 @@ class ChatNotifier extends StateNotifier<ChatState> {
           messages: [...state.messages, assistantMsg],
           streamingContent: '',
           isLoading: false,
+          streamInterrupted: wasInterrupted,
         );
+        _checkCompactThreshold();
       } else {
-        state =
-            state.copyWith(isLoading: false, streamingContent: '');
+        state = state.copyWith(
+          isLoading: false,
+          streamingContent: '',
+          streamInterrupted: false,
+        );
       }
     } catch (e) {
       var errMsg = e.toString();
@@ -376,6 +449,136 @@ class ChatNotifier extends StateNotifier<ChatState> {
     state = state.copyWith(suggestedSkills: []);
   }
 
+  // ── Compact / Summary ──
+
+  static const int compactTurnThreshold = 30;
+  static const int compactReSuggestTurns = 5; // cool-down after dismiss
+
+  /// Check if conversation has reached the compact threshold and suggest it.
+  void _checkCompactThreshold() {
+    if (state.compactSuggested || state.isCompacting) return;
+    final turnCount = state.messages.where((m) => m.role == MessageRole.user).length;
+    if (turnCount < compactTurnThreshold) return;
+
+    // Respect cool-down after user dismissed
+    if (state.dismissedCompactAtTurnCount != null &&
+        turnCount - state.dismissedCompactAtTurnCount! < compactReSuggestTurns) {
+      return;
+    }
+
+    state = state.copyWith(compactSuggested: true);
+  }
+
+  /// Dismiss the compact suggestion bar (re-suggests after [compactReSuggestTurns] more turns).
+  void dismissCompact() {
+    final turnCount = state.messages.where((m) => m.role == MessageRole.user).length;
+    state = state.copyWith(
+      compactSuggested: false,
+      dismissedCompactAtTurnCount: turnCount,
+    );
+  }
+
+  /// Compress the conversation: summarize all history via LLM and replace messages.
+  Future<void> compactConversation() async {
+    final targetConvId = state.conversation?.id;
+    final targetTitle = state.conversation?.title; // capture early, avoid race on switch
+    if (targetConvId == null || state.messages.length < 4) return;
+    state = state.copyWith(isCompacting: true, compactSuggested: false, error: null);
+
+    try {
+      final modelConfig = await _modelManager.getDefaultConfig();
+      if (modelConfig == null) {
+        state = state.copyWith(isCompacting: false, error: '请先在设置中配置模型 API');
+        return;
+      }
+      final apiKey = await _modelManager.getApiKey(modelConfig.id);
+      if (apiKey == null) {
+        state = state.copyWith(isCompacting: false, error: 'API Key 未找到');
+        return;
+      }
+
+      // Build conversation history as messages for summarization (exclude system role
+      // — Anthropic Messages API only supports user/assistant in the messages array)
+      final summaryMessages = state.messages
+          .where((m) => m.role != MessageRole.system)
+          .map((m) => {
+        'role': m.role.name,
+        'content': m.content,
+      }).toList();
+      summaryMessages.add({
+        'role': 'user',
+        'content': '请总结以上所有对话。保留用户的核心需求、已获取的数据、分析结果和关键决策。去掉问候语和工具调用细节。用中文输出。',
+      });
+
+      // Use Agent Service for summary generation (maxTurns: 3 for safety)
+      final agent = _ref.read(agentServiceProvider);
+      final stream = agent.chat(
+        apiKey: apiKey,
+        baseUrl: modelConfig.apiUrl,
+        model: modelConfig.modelName,
+        messages: summaryMessages,
+        systemPrompt: '你是一个对话摘要助手，只做一件事：总结对话。不要使用任何工具。',
+        maxTokens: 8192,
+        maxTurns: 3,
+      );
+
+      String summary = '';
+      await for (final event in stream) {
+        if (event is TextDeltaEvent) {
+          summary += event.content;
+        } else if (event is AgentErrorEvent) {
+          state = state.copyWith(isCompacting: false, error: '压缩失败: ${event.message}');
+          return;
+        }
+      }
+
+      if (summary.trim().isEmpty) {
+        state = state.copyWith(isCompacting: false, error: '压缩失败，摘要为空');
+        return;
+      }
+
+      final turnCount = state.messages.where((m) => m.role == MessageRole.user).length;
+      final summaryContent = '📋 以下是对之前 $turnCount 轮对话的摘要，请基于此继续对话：\n\n$summary';
+
+      // Atomically replace all messages with the summary
+      await _conversationRepo.replaceConversationMessages(
+        targetConvId,
+        [
+          {
+            'role': MessageRole.user.name,
+            'content': summaryContent,
+          },
+        ],
+      );
+
+      // Update conversation title to indicate compressed
+      var compactTitle = targetTitle;
+      if (compactTitle != null && !compactTitle.startsWith('📋')) {
+        compactTitle = '📋 $compactTitle';
+        await _conversationRepo.updateConversation(
+          targetConvId,
+          title: compactTitle,
+        );
+      }
+
+      // Reload fresh state from DB (only if still on the same conversation)
+      if (state.conversation?.id == targetConvId) {
+        final freshMessages = await _conversationRepo.getMessages(targetConvId);
+        state = state.copyWith(
+          messages: freshMessages,
+          isCompacting: false,
+        );
+      } else {
+        state = state.copyWith(isCompacting: false);
+      }
+    } catch (e) {
+      state = state.copyWith(
+        isCompacting: false,
+        error: '压缩失败: ${e.toString().replaceAll('Exception: ', '').trim()}',
+      );
+    }
+  }
+
   String _defaultSystemPrompt() {
     return '你是叩问 AI 助手，一个知识广博、无所不谈的专业分析伙伴。\n\n'
         '核心原则：\n'
@@ -387,13 +590,16 @@ class ChatNotifier extends StateNotifier<ChatState> {
   }
 
   /// Human-readable label for tool calls shown in the chat.
-  static String _toolLabel(String name, Map<String, dynamic> input) {
-    return switch (name) {
+  /// Includes the active skill's icon and name when available.
+  static String _toolLabel(String name, Map<String, dynamic> input, {ParsedSkill? skill}) {
+    final skillPrefix = skill != null ? '${skill.icon} ${skill.name} → ' : '🔧 ';
+    final label = switch (name) {
       'sandbox_execute' =>
         '执行${input['language'] == 'bash' ? 'Bash' : 'Python'}脚本',
       'web_search' => '搜索: ${input['query'] ?? ''}',
       _ => '调用工具: $name',
     };
+    return '$skillPrefix$label';
   }
 
   /// Build current date/time context so the LLM knows "now".

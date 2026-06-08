@@ -153,7 +153,7 @@ class InstallerNotifier extends StateNotifier<InstallState> {
 
       for (final s in installResult.skills) {
         try {
-          final exists = await repo.skillExists(s.name);
+          final exists = await repo.skillExists(s.name, parentId: collectionParentId);
           if (exists) continue;
 
           // Look up the GitHubSkillResult to get the raw URL for SKILL.md
@@ -180,7 +180,10 @@ class InstallerNotifier extends StateNotifier<InstallState> {
             parentId: collectionParentId,
             description: '后端安装 · ${s.files} 个文件',
           );
-        } catch (_) {}
+        } catch (e) {
+          // ignore: avoid_print
+          print('install_provider: local cache write failed for ${s.name}: $e');
+        }
       }
 
       _ref.invalidate(installedSkillsProvider);

@@ -62,6 +62,23 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   @override
   Widget build(BuildContext context) {
     final state = ref.watch(chatProvider);
+    // Show loading spinner while conversation is being loaded
+    if (state.isLoadingConversation) {
+      return Scaffold(
+        appBar: AppBar(title: const Text('叩问')),
+        body: const Center(
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              CircularProgressIndicator(),
+              SizedBox(height: 16),
+              Text('加载对话中...',
+                  style: TextStyle(fontSize: 14, color: Colors.grey)),
+            ],
+          ),
+        ),
+      );
+    }
     if (!_initialized) {
       return Scaffold(
         appBar: AppBar(title: const Text('叩问')),
@@ -289,6 +306,86 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                 ],
               ),
             ),
+          // Compact suggestion bar
+          if (state.isCompacting)
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.symmetric(
+                  horizontal: 16, vertical: 12),
+              color: const Color(0xFF4F46E5).withValues(alpha: 0.06),
+              child: Row(
+                children: [
+                  SizedBox(
+                    width: 16,
+                    height: 16,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2,
+                      color: const Color(0xFF4F46E5),
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  Text(
+                    '正在压缩对话...',
+                    style: TextStyle(
+                        fontSize: 13, color: Colors.grey.shade700),
+                  ),
+                ],
+              ),
+            )
+          else if (state.compactSuggested)
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.symmetric(
+                  horizontal: 16, vertical: 10),
+              color: const Color(0xFF4F46E5).withValues(alpha: 0.04),
+              child: Row(
+                children: [
+                  Icon(Icons.compress, size: 18,
+                      color: const Color(0xFF4F46E5)),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      '对话已超过30轮，建议压缩摘要继续对话',
+                      style: TextStyle(
+                          fontSize: 13, color: Colors.grey.shade700),
+                    ),
+                  ),
+                  TextButton(
+                    onPressed: () => ref
+                        .read(chatProvider.notifier)
+                        .compactConversation(),
+                    style: TextButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 8),
+                        minimumSize: Size.zero,
+                        tapTargetSize:
+                            MaterialTapTargetSize.shrinkWrap),
+                    child: const Text('压缩',
+                        style: TextStyle(fontSize: 12)),
+                  ),
+                  TextButton(
+                    onPressed: () => ref
+                        .read(chatProvider.notifier)
+                        .newConversation(),
+                    style: TextButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 8),
+                        minimumSize: Size.zero,
+                        tapTargetSize:
+                            MaterialTapTargetSize.shrinkWrap),
+                    child: const Text('新对话',
+                        style: TextStyle(fontSize: 12)),
+                  ),
+                  GestureDetector(
+                    onTap: () => ref
+                        .read(chatProvider.notifier)
+                        .dismissCompact(),
+                    child: Icon(Icons.close, size: 16,
+                        color: Colors.grey.shade400),
+                  ),
+                ],
+              ),
+            ),
           Expanded(
             child: state.messages.isEmpty
                 ? _WelcomeView(
@@ -299,7 +396,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                     padding:
                         const EdgeInsets.symmetric(vertical: 8),
                     itemCount: state.messages.length +
-                        (state.isLoading ? 1 : 0),
+                        (state.isLoading ? 1 : 0) +
+                        (state.streamInterrupted ? 1 : 0),
                     itemBuilder: (context, index) {
                       if (index < state.messages.length) {
                         return ChatBubble(
@@ -307,7 +405,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                           skillIcon: state.skill?.icon,
                         );
                       }
-                      if (state.streamingContent.isNotEmpty) {
+                      if (state.isLoading && state.streamingContent.isNotEmpty) {
+                        // Show streaming content
                         return ChatBubble(
                           message: Message(
                             id: 'streaming',
@@ -319,10 +418,34 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                           skillIcon: state.skill?.icon,
                         );
                       }
-                      return const Padding(
-                        padding: EdgeInsets.all(16),
-                        child: Center(
-                            child: CircularProgressIndicator()),
+                      if (state.isLoading) {
+                        // Still waiting for first byte
+                        return const Padding(
+                          padding: EdgeInsets.all(16),
+                          child: Center(
+                              child: CircularProgressIndicator()),
+                        );
+                      }
+                      // Interruption indicator (persistent after streaming ends)
+                      return Container(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 16, vertical: 8),
+                        child: Row(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            Icon(Icons.warning_amber_rounded,
+                                size: 16, color: Colors.orange.shade400),
+                            const SizedBox(width: 6),
+                            Text(
+                              '对话已中断',
+                              style: TextStyle(
+                                fontSize: 13,
+                                color: Colors.orange.shade400,
+                                fontWeight: FontWeight.w500,
+                              ),
+                            ),
+                          ],
+                        ),
                       );
                     },
                   ),

@@ -14,6 +14,7 @@ final marketSkillsProvider = FutureProvider<List<MarketSkill>>((ref) async {
 
   // 1. Fetch installed skills from backend API
   Set<String> installedNames = {};
+  Set<String> installedSourceRepos = {};
   try {
     final api = ref.watch(skillApiServiceProvider);
     final backendSkills = await api.listSkills();
@@ -21,19 +22,21 @@ final marketSkillsProvider = FutureProvider<List<MarketSkill>>((ref) async {
       final ms = MarketSkill.fromBackendSkill(bs);
       skills.add(ms);
       installedNames.add(bs.name);
+      if (bs.sourceRepo != null) installedSourceRepos.add(bs.sourceRepo!);
     }
   } catch (_) {
     // Backend unreachable — fall back to local SQLite
     try {
       final repo = SkillRepository(ref.read(dbProvider));
-      final installed = await repo.getTopLevelSkills();
-      for (final s in installed) {
+      final allInstalled = await repo.getInstalledSkills();
+      final topLevel = allInstalled.where((s) => s.parentId == null).toList();
+      for (final s in topLevel) {
         skills.add(MarketSkill(
           name: s.name,
           displayName: s.name,
           version: s.version,
           author: s.author ?? '',
-          description: s.category,
+          description: s.description ?? s.category,
           icon: '📦',
           category: s.category,
           tags: [],
@@ -43,8 +46,10 @@ final marketSkillsProvider = FutureProvider<List<MarketSkill>>((ref) async {
           isInstalled: true,
           id: s.id,
         ));
-        installedNames.add(s.name);
       }
+      // Track ALL names (including children) so online sources don't
+      // show child skills as "not installed" when they are actually installed.
+      installedNames.addAll(allInstalled.map((s) => s.name));
     } catch (_) {}
   }
 
@@ -59,11 +64,18 @@ final marketSkillsProvider = FutureProvider<List<MarketSkill>>((ref) async {
       try {
         final online = await ghSource.fetchFromSource(source);
         for (final s in online) {
-          if (!installedNames.contains(s.name)) {
+          if (installedNames.contains(s.name)) continue;
+          // For collection entries, check if any installed skill has the
+          // same sourceRepo — backend stores child skills, not the collection
+          // name, so name-based matching would always miss them.
+          if (s.isCollection && s.sourceRepo != null &&
+              installedSourceRepos.contains(s.sourceRepo)) {
+            skills.add(s..isInstalled = true);
+          } else {
             s.isInstalled = false;
             skills.add(s);
-            installedNames.add(s.name);
           }
+          installedNames.add(s.name);
         }
       } catch (_) {
         // Skip unavailable sources silently

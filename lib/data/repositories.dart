@@ -253,6 +253,30 @@ class ConversationRepository {
     });
   }
 
+  Future<void> replaceConversationMessages(
+      String conversationId, List<Map<String, dynamic>> messages) async {
+    final db = await _db.database;
+    final now = DateTime.now();
+    await db.transaction((txn) async {
+      await txn.delete('messages', where: 'conversation_id = ?', whereArgs: [conversationId]);
+      for (final msg in messages) {
+        await txn.insert('messages', {
+          'id': msg['id'] ?? _uuid.v4(),
+          'conversation_id': conversationId,
+          'role': msg['role'],
+          'content': msg['content'],
+          'created_at': msg['created_at'] ?? now.millisecondsSinceEpoch,
+        });
+      }
+      await txn.update(
+        'conversations',
+        {'updated_at': now.millisecondsSinceEpoch},
+        where: 'id = ?',
+        whereArgs: [conversationId],
+      );
+    });
+  }
+
   Future<List<Message>> getMessages(String conversationId) async {
     final db = await _db.database;
     final maps = await db.query(

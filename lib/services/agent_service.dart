@@ -27,7 +27,8 @@ class ToolResultEvent extends AgentEvent {
 class AgentDoneEvent extends AgentEvent {
   final int turns;
   final bool truncated;
-  AgentDoneEvent({required this.turns, this.truncated = false});
+  final String truncationReason; // "max_turns", "max_tokens", or ""
+  AgentDoneEvent({required this.turns, this.truncated = false, this.truncationReason = ''});
 }
 
 class AgentErrorEvent extends AgentEvent {
@@ -71,7 +72,7 @@ class AgentService {
     String model = 'deepseek-v4-pro',
     required List<Map<String, String>> messages,
     String? systemPrompt,
-    int maxTokens = 16384,
+    int maxTokens = 32768,
     int maxTurns = 15,
     bool webSearchEnabled = false,
     CancelToken? cancelToken,
@@ -150,6 +151,7 @@ class AgentService {
               yield AgentDoneEvent(
                 turns: json['turns'] as int,
                 truncated: (json['truncated'] as bool?) ?? false,
+                truncationReason: (json['truncation_reason'] as String?) ?? '',
               );
             case 'error':
               final json = jsonDecode(data) as Map<String, dynamic>;
