@@ -18,7 +18,7 @@ from contextlib import asynccontextmanager
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global http_client
-    http_client = httpx.AsyncClient(timeout=120)
+    http_client = httpx.AsyncClient(timeout=60.0)
     yield
     await http_client.aclose()
 
@@ -122,7 +122,7 @@ async def execute_sandbox(language: str, script: str, timeout: int = 30,
         if user_id and skill_name:
             body["user_id"] = user_id
             body["skill_name"] = skill_name
-        resp = await http_client.post(SANDBOX_URL, json=body)
+        resp = await http_client.post(SANDBOX_URL, json=body, timeout=httpx.Timeout(45.0))
         return resp.json()
     except Exception as e:
         return {"stdout": "", "stderr": str(e), "exit_code": -1}
@@ -184,7 +184,6 @@ async def agent_loop(
     loop_messages = list(messages)  # copy
 
     for turn in range(max_turns):
-        # ── Stream a response from the LLM ──
         try:
             stream = await client.messages.create(
                 model=model,
@@ -195,139 +194,140 @@ async def agent_loop(
                 stream=True,
                 timeout=httpx.Timeout(60.0, connect=10.0),
             )
+
+            text_accumulator = ""
+            tool_uses: list[dict] = []
+            current_tool_use = None  # {"id", "name", "_partial"}
+            stop_reason = None
+
+            async for sdk_event in stream:
+                if sdk_event.type == "content_block_start":
+                    cb = sdk_event.content_block
+                    cb_type = _safe_get(cb, 'type', '')
+                    if cb_type == "text":
+                        initial = _safe_get(cb, 'text', '')
+                        text_accumulator = initial
+                        if initial:
+                            yield sse_event("text_delta", {"content": initial})
+                    elif cb_type == "tool_use":
+                        current_tool_use = {
+                            "id": _safe_get(cb, 'id', ''),
+                            "name": _safe_get(cb, 'name', ''),
+                            "_partial": "",
+                        }
+
+                elif sdk_event.type == "content_block_delta":
+                    delta = sdk_event.delta
+                    dt = _safe_get(delta, 'type', '')
+                    if dt == "text_delta":
+                        chunk = _safe_get(delta, 'text', '')
+                        text_accumulator += chunk
+                        yield sse_event("text_delta", {"content": chunk})
+                    elif dt == "input_json_delta":
+                        if current_tool_use is not None:
+                            pj = _safe_get(delta, 'partial_json', '')
+                            current_tool_use["_partial"] += pj
+
+                elif sdk_event.type == "content_block_stop":
+                    if current_tool_use is not None:
+                        raw = current_tool_use["_partial"]
+                        try:
+                            parsed = json.loads(raw) if raw else {}
+                        except json.JSONDecodeError:
+                            parsed = {}
+                        tool_uses.append({
+                            "id": current_tool_use["id"],
+                            "name": current_tool_use["name"],
+                            "input": parsed,
+                        })
+                        current_tool_use = None
+
+                elif sdk_event.type == "message_delta":
+                    # Extract stop_reason — different SDK versions differ on attribute vs dict
+                    d = sdk_event.delta
+                    stop_reason = (getattr(d, 'stop_reason', None)
+                                   or (d.get('stop_reason') if isinstance(d, dict) else None))
+
+                # message_start / message_stop: nothing needed
+
+            # ── Reconstruct full response content for loop history ──
+            response_content = []
+            if text_accumulator:
+                response_content.append({"type": "text", "text": text_accumulator})
+            for tu in tool_uses:
+                response_content.append({
+                    "type": "tool_use",
+                    "id": tu["id"],
+                    "name": tu["name"],
+                    "input": tu["input"],
+                })
+
+            is_truncated = stop_reason == "max_tokens"
+
+            if not tool_uses:
+                yield sse_event("done", {
+                    "turns": turn + 1,
+                    "truncated": is_truncated,
+                    "truncation_reason": "max_tokens" if is_truncated else "",
+                })
+                return
+
+            # ── Execute tools ──
+            tool_results = []
+            for tu in tool_uses:
+                tool_id = tu["id"]
+                tool_name = tu["name"]
+                tool_input = tu["input"]
+
+                yield sse_event("tool_use", {
+                    "id": tool_id,
+                    "name": tool_name,
+                    "input": tool_input,
+                })
+
+                if tool_name == "sandbox_execute":
+                    result = await execute_sandbox(
+                        tool_input.get("language", "python"),
+                        tool_input.get("script", ""),
+                        tool_input.get("timeout", 30),
+                        user_id=user_id, skill_name=skill_name,
+                    )
+                elif tool_name == "web_search":
+                    result = await execute_web_search(
+                        tool_input.get("query", ""),
+                        tool_input.get("count", 5),
+                    )
+                else:
+                    result = {"error": f"Unknown tool: {tool_name}"}
+
+                yield sse_event("tool_result", {
+                    "id": tool_id,
+                    "name": tool_name,
+                    "result": result,
+                })
+
+                tool_results.append({
+                    "tool_use_id": tool_id,
+                    "type": "tool_result",
+                    "content": json.dumps(result, ensure_ascii=False),
+                })
+
+            # Append assistant message + tool results to conversation for next turn
+            loop_messages.append({
+                "role": "assistant",
+                "content": response_content,
+            })
+            loop_messages.append({
+                "role": "user",
+                "content": tool_results,
+            })
+
         except asyncio.CancelledError:
             yield sse_event("error", {"message": "请求被取消（客户端断开连接）"})
             return
         except Exception as e:
             yield sse_event("error", {"message": str(e)})
             return
-
-        text_accumulator = ""
-        tool_uses: list[dict] = []
-        current_tool_use = None  # {"id", "name", "_partial"}
-        stop_reason = None
-
-        async for sdk_event in stream:
-            if sdk_event.type == "content_block_start":
-                cb = sdk_event.content_block
-                cb_type = _safe_get(cb, 'type', '')
-                if cb_type == "text":
-                    initial = _safe_get(cb, 'text', '')
-                    text_accumulator = initial
-                    if initial:
-                        yield sse_event("text_delta", {"content": initial})
-                elif cb_type == "tool_use":
-                    current_tool_use = {
-                        "id": _safe_get(cb, 'id', ''),
-                        "name": _safe_get(cb, 'name', ''),
-                        "_partial": "",
-                    }
-
-            elif sdk_event.type == "content_block_delta":
-                delta = sdk_event.delta
-                dt = _safe_get(delta, 'type', '')
-                if dt == "text_delta":
-                    chunk = _safe_get(delta, 'text', '')
-                    text_accumulator += chunk
-                    yield sse_event("text_delta", {"content": chunk})
-                elif dt == "input_json_delta":
-                    if current_tool_use is not None:
-                        pj = _safe_get(delta, 'partial_json', '')
-                        current_tool_use["_partial"] += pj
-
-            elif sdk_event.type == "content_block_stop":
-                if current_tool_use is not None:
-                    raw = current_tool_use["_partial"]
-                    try:
-                        parsed = json.loads(raw) if raw else {}
-                    except json.JSONDecodeError:
-                        parsed = {}
-                    tool_uses.append({
-                        "id": current_tool_use["id"],
-                        "name": current_tool_use["name"],
-                        "input": parsed,
-                    })
-                    current_tool_use = None
-
-            elif sdk_event.type == "message_delta":
-                # Extract stop_reason — different SDK versions differ on attribute vs dict
-                d = sdk_event.delta
-                stop_reason = (getattr(d, 'stop_reason', None)
-                               or (d.get('stop_reason') if isinstance(d, dict) else None))
-
-            # message_start / message_stop: nothing needed
-
-        # ── Reconstruct full response content for loop history ──
-        response_content = []
-        if text_accumulator:
-            response_content.append({"type": "text", "text": text_accumulator})
-        for tu in tool_uses:
-            response_content.append({
-                "type": "tool_use",
-                "id": tu["id"],
-                "name": tu["name"],
-                "input": tu["input"],
-            })
-
-        is_truncated = stop_reason == "max_tokens"
-
-        if not tool_uses:
-            yield sse_event("done", {
-                "turns": turn + 1,
-                "truncated": is_truncated,
-                "truncation_reason": "max_tokens" if is_truncated else "",
-            })
-            return
-
-        # ── Execute tools ──
-        tool_results = []
-        for tu in tool_uses:
-            tool_id = tu["id"]
-            tool_name = tu["name"]
-            tool_input = tu["input"]
-
-            yield sse_event("tool_use", {
-                "id": tool_id,
-                "name": tool_name,
-                "input": tool_input,
-            })
-
-            if tool_name == "sandbox_execute":
-                result = await execute_sandbox(
-                    tool_input.get("language", "python"),
-                    tool_input.get("script", ""),
-                    tool_input.get("timeout", 30),
-                    user_id=user_id, skill_name=skill_name,
-                )
-            elif tool_name == "web_search":
-                result = await execute_web_search(
-                    tool_input.get("query", ""),
-                    tool_input.get("count", 5),
-                )
-            else:
-                result = {"error": f"Unknown tool: {tool_name}"}
-
-            yield sse_event("tool_result", {
-                "id": tool_id,
-                "name": tool_name,
-                "result": result,
-            })
-
-            tool_results.append({
-                "tool_use_id": tool_id,
-                "type": "tool_result",
-                "content": json.dumps(result, ensure_ascii=False),
-            })
-
-        # Append assistant message + tool results to conversation for next turn
-        loop_messages.append({
-            "role": "assistant",
-            "content": response_content,
-        })
-        loop_messages.append({
-            "role": "user",
-            "content": tool_results,
-        })
 
     # Max turns reached
     yield sse_event("done", {"turns": max_turns, "truncated": True, "truncation_reason": "max_turns"})

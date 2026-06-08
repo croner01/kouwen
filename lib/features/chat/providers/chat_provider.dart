@@ -460,6 +460,11 @@ class ChatNotifier extends StateNotifier<ChatState> {
             .replaceAll('Exception: ', '')
             .replaceAll('DioException', '')
             .trim();
+        if (errMsg.contains('HttpConnection closed') || errMsg.contains('Connection closed')) {
+          errMsg = '服务器连接中断，请稍后重试';
+        } else if (errMsg.contains('SocketException') || errMsg.contains('Connection refused')) {
+          errMsg = '无法连接到服务器，请检查网络连接';
+        }
       }
 
       state = state.copyWith(
