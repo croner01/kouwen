@@ -1,0 +1,54 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: backend
+  namespace: kouwen
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: backend
+  template:
+    metadata:
+      labels:
+        app: backend
+    spec:
+      containers:
+      - env:
+        - name: DATABASE_URL
+          value: postgresql://kouwen:kouwen123@postgres.kouwen:5432/kouwen
+        - name: AGENT_URL
+          value: http://agent.kouwen:8080/api/v1/agent/chat
+        - name: JWT_SECRET
+          value: 49695f6a9e55a644ea31a2ef8aa36210190cbdb033a78c2102b5c29674f2de8c
+        - name: ENCRYPTION_KEY
+          value: Yu4j83BDW_D7y1LnZ2jbei4gZp7PoHXT_U4fz7I5k0Q=
+        - name: PASSWORD_SALT
+          value: dd4de4a925222f99ad7d515d3eddb777
+        - name: SKILLS_PVC
+          value: /skills
+        image: localhost:5000/kouwen-backend:v4
+        imagePullPolicy: Always
+        livenessProbe:
+          httpGet:
+            path: /api/v1/health
+            port: 8080
+          initialDelaySeconds: 10
+          periodSeconds: 20
+        name: backend
+        ports:
+        - containerPort: 8080
+        resources:
+          limits:
+            cpu: "1"
+            memory: 512Mi
+          requests:
+            cpu: 100m
+            memory: 128Mi
+        volumeMounts:
+        - mountPath: /skills
+          name: skills
+      volumes:
+      - name: skills
+        persistentVolumeClaim:
+          claimName: skills-data
