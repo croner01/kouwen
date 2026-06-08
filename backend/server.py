@@ -207,67 +207,90 @@ async def install_skill(req: InstallSkillRequest, user=Depends(get_user)):
         if not tree:
             raise HTTPException(400, "Empty repository")
 
-        # ── Detect skill entry points (Claude Code format) ──
-        # Structured repos: skills/<name>/{SKILL.md, skill.yaml, skill.yml}
-        # Flat repos:       <name>.md / <name>.yaml / <name>.yml at root
-        # Directory repos:  <name>/{SKILL.md, skill.yaml, skill.yml} (any depth)
+        # ── Detect skill entry points (unified — no structured/flat branch) ──
+        # Two-pass: 1) SKILL_ENTRY_NAMES → grouped dir skills
+        #           2) remaining .md/.yaml/.yml → single-file skills
         SKIP_FILES = {"readme.md", "license.md", "pubspec.yaml", "pubspec.yml",
                      "analysis_options.yaml", ".pre-commit-config.yaml",
                      "skills-index.yaml", "_config.yml", "marketplace.json"}
         SKILL_ENTRY_NAMES = {"skill.md", "skill.yaml", "skill.yml"}
 
-        # Detect if repo has a skills/ directory (structured mode)
-        has_skills_dir = any(
-            e.get("path", "").lower() in ("skills",) or e.get("path", "").lower().startswith("skills/")
-            for e in tree
-        )
+        print(f"[install_skill] repo={owner}/{repo} tree_size={len(tree)} token={'yes' if req.gitee_token else 'no'}")
 
-        # Discover skill entry points from the repo tree
-        skill_entries = {}  # skill_key -> {"entry_file": path, "files": set, "is_single": bool}
+        # Build a quick map of all blob paths -> lower filename
+        blob_paths = {}
         for item in tree:
             if item.get("type") != "blob":
                 continue
-            path = item["path"]
-            name_lower = path.rsplit("/", 1)[-1].lower()
-            is_root = "/" not in path
+            p = item["path"]
+            n = p.rsplit("/", 1)[-1].lower()
+            blob_paths[p] = n
 
-            if has_skills_dir:
-                # Structured mode: only under skills/ dir
-                if not path.lower().startswith("skills/"):
-                    continue
-                if name_lower in SKILL_ENTRY_NAMES:
-                    parent = path.rsplit("/", 1)[0]
-                    skill_entries.setdefault(parent, {"entry_file": path, "files": set(), "is_single": False})
-            else:
-                # Flat mode: accept .md (exclude readme/license), .yaml, .yml
-                if not name_lower.endswith((".md", ".yaml", ".yml")):
-                    continue
-                if name_lower in SKIP_FILES or name_lower.startswith("."):
-                    continue
-
-                if is_root:
-                    # Root-level file = single-file skill
-                    skill_entries[f"root:{path}"] = {"entry_file": path, "files": {path}, "is_single": True}
-                elif name_lower in SKILL_ENTRY_NAMES:
-                    # File in subdirectory that's a known entry name → dir-based skill
-                    parent = path.rsplit("/", 1)[0]
+        # Pass 1: SKILL_ENTRY_NAMES files → grouped skills (includes supporting files in parent dir)
+        skill_entries = {}
+        grouped_dirs = set()
+        for path, name_lower in blob_paths.items():
+            if name_lower in SKILL_ENTRY_NAMES:
+                parent = path.rsplit("/", 1)[0]
+                if parent not in skill_entries:
                     skill_entries[parent] = {"entry_file": path, "files": set(), "is_single": False}
+                    grouped_dirs.add(parent)
+
+        # Pass 2: remaining .md/.yaml/.yml → single-file skills (unless parent already grouped)
+        for path, name_lower in blob_paths.items():
+            if name_lower in SKILL_ENTRY_NAMES:
+                continue
+            if not name_lower.endswith((".md", ".yaml", ".yml")):
+                continue
+            if name_lower in SKIP_FILES or name_lower.startswith("."):
+                continue
+            if "/" not in path:
+                # Root-level file → single-file skill
+                skill_entries[f"root:{path}"] = {"entry_file": path, "files": {path}, "is_single": True}
+            else:
+                parent = path.rsplit("/", 1)[0]
+                if parent not in grouped_dirs:
+                    # Not under a grouped skill dir → standalone file
+                    skill_entries[f"sub:{path}"] = {"entry_file": path, "files": {path}, "is_single": True}
+                # else: supporting file of a grouped dir, will be collected later
+
+        all_md_yaml = sorted(p for p, n in blob_paths.items()
+                            if n.endswith((".md", ".yaml", ".yml"))
+                            and n not in SKIP_FILES)
+
+        print(f"[install_skill] entries={len(skill_entries)} groups={len(grouped_dirs)} md_yaml_total={len(all_md_yaml)}")
+        for k, v in sorted(skill_entries.items())[:15]:
+            print(f"  key={k} entry={v['entry_file']} single={v['is_single']}")
 
         if not skill_entries:
+            print(f"[install_skill] TREE DUMP (blobs, first 40):")
+            for e in tree[:40]:
+                if e.get("type") == "blob":
+                    print(f"  {e['path']}")
             raise HTTPException(404, "No skills found in this repository")
 
-        # For structured repos: collect ALL supporting files under each skill dir
-        if has_skills_dir:
+        print(f"[install_skill] skill_entries found: {len(skill_entries)}")
+        for k, v in list(skill_entries.items())[:10]:
+            print(f"  key={k} entry={v['entry_file']} single={v['is_single']} files_count={len(v['files'])}")
+
+        if not skill_entries:
+            # Debug: show what's in the tree
+            print(f"[install_skill] TREE DUMP (first 30 entries):")
+            for item in tree[:30]:
+                if item.get("type") == "blob":
+                    print(f"  blob: {item['path']}")
+            raise HTTPException(404, "No skills found in this repository")
+
+        # Collect ALL supporting files for non-single-file skills from the tree
+        for skill_key, entry in skill_entries.items():
+            if entry["is_single"]:
+                continue  # single-file skills only need their one file
             for item in tree:
                 if item.get("type") != "blob":
                     continue
                 path = item["path"]
-                if not path.lower().startswith("skills/"):
-                    continue
-                for entry in skill_entries.values():
-                    skill_path = entry["entry_file"].rsplit("/", 1)[0]
-                    if path.startswith(skill_path + "/") or path == entry["entry_file"]:
-                        entry["files"].add(path)
+                if path.startswith(skill_key + "/"):
+                    entry["files"].add(path)
 
         installed = []
         for skill_key, entry in sorted(skill_entries.items())[:5]:
