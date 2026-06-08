@@ -132,10 +132,14 @@ class SkillApiService {
 
   /// Install a skill from a Gitee repo. Backend handles full directory download,
   /// PVC storage, and pip dependency installation.
-  Future<InstallResult> installSkill(String sourceRepo) async {
+  /// Pass [giteeToken] if available so the backend can authenticate with Gitee API.
+  Future<InstallResult> installSkill(String sourceRepo, {String? giteeToken}) async {
     final resp = await _dio.post(
       '$_baseUrl/api/v1/skills/install',
-      data: {'source_repo': sourceRepo},
+      data: {
+        'source_repo': sourceRepo,
+        if (giteeToken != null && giteeToken.isNotEmpty) 'gitee_token': giteeToken,
+      },
       options: Options(headers: _headers),
     );
     return InstallResult.fromJson(resp.data as Map<String, dynamic>);

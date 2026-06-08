@@ -38,6 +38,16 @@ class GitHubSkillSource {
     isGitee: true,
   );
 
+  /// A-share + global trading analysis — multi-agent LLM research with
+  /// web-search-driven market data covering 沪深京, US, and HK stocks.
+  static const tradingAgentsPlugin = SkillSource(
+    name: 'Trading Agents 交易分析',
+    owner: 'ren02',
+    repo: 'trading-agents-plugin',
+    branch: 'main',
+    isGitee: true,
+  );
+
   GitHubSkillSource({Dio? dio, String? token, String? giteeToken})
       : _loader = GitHubSkillLoader(dio: dio, token: token, giteeToken: giteeToken);
 

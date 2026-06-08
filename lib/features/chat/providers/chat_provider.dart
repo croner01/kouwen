@@ -276,6 +276,7 @@ class ChatNotifier extends StateNotifier<ChatState> {
         model: modelConfig.modelName,
         messages: agentMessages,
         systemPrompt: '$systemPrompt\n\n${_dateContext()}',
+        webSearchEnabled: state.webSearchEnabled,
         cancelToken: _activeCancelToken,
       );
 

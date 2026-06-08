@@ -15,7 +15,11 @@ class ApiService {
   final Dio _dio;
   static const _maxRetries = 3;
   static const _connectTimeout = Duration(seconds: 15);
-  static const _receiveTimeout = Duration(seconds: 120);
+  static const _receiveTimeout = Duration(seconds: 300); // 5 min for long analysis
+
+  /// Default max output tokens — prevents API from silently truncating
+  /// long responses (many providers default to only 2048-4096).
+  static const int defaultMaxTokens = 16384;
 
   ApiService({Dio? dio}) : _dio = dio ?? Dio() {
     _dio.options.connectTimeout = _connectTimeout;
@@ -43,6 +47,7 @@ class ApiService {
     required String modelName,
     required List<Map<String, String>> messages,
     double temperature = 0.7,
+    int maxTokens = defaultMaxTokens,
     int maxRetries = _maxRetries,
     CancelToken? cancelToken,
     Map<String, dynamic>? searchParam,
@@ -59,6 +64,7 @@ class ApiService {
           modelName: modelName,
           messages: messages,
           temperature: temperature,
+          maxTokens: maxTokens,
           cancelToken: cancelToken,
           searchParam: searchParam,
         );
@@ -94,6 +100,7 @@ class ApiService {
     required String modelName,
     required List<Map<String, String>> messages,
     double temperature = 0.7,
+    int maxTokens = defaultMaxTokens,
     CancelToken? cancelToken,
     Map<String, dynamic>? searchParam,
   }) async* {
@@ -121,6 +128,7 @@ class ApiService {
         'messages': messages,
         'stream': true,
         'temperature': temperature,
+        'max_tokens': maxTokens,
         if (searchParam != null) ...searchParam,
       },
     );
@@ -151,6 +159,12 @@ class ApiService {
               final content = delta?['content'] as String?;
               if (content != null && content.isNotEmpty) {
                 yield content;
+              }
+              // Check if response was truncated by token limit
+              final finishReason = choices[0]['finish_reason'] as String?;
+              if (finishReason == 'length') {
+                yield '\n\n> ⚠️ 输出已达 token 上限，回复可能不完整。'
+                    '请在设置中增加模型的最大输出长度。';
               }
             }
           } catch (_) {

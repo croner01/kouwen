@@ -146,12 +146,13 @@ class SkillMarketService {
   static Future<InstallResult> installSkill(
     MarketSkill skill, {
     required SkillApiService apiService,
+    String? giteeToken,
   }) async {
     if (skill.sourceRepo == null) {
       throw Exception('该技能没有来源仓库');
     }
     // Backend handles everything: scan, download, PVC, pip, PostgreSQL
-    final result = await apiService.installSkill(skill.sourceRepo!);
+    final result = await apiService.installSkill(skill.sourceRepo!, giteeToken: giteeToken);
     skill.isInstalled = true;
 
     // Set backend ID so user can immediately uninstall without re-fetching list
@@ -173,26 +174,61 @@ class SkillMarketService {
             if (resp.statusCode == 200 && resp.data != null) {
               yamlContent = resp.data.toString();
             }
-          } catch (_) {
+          } catch (e) {
             // Download failed — backend has the content, local cache will be empty
+            // ignore: avoid_print
+            print('SkillMarketService: SKILL.md download failed ($e)');
           }
         }
 
         final repo = SkillRepository(AppDatabase.instance);
-        for (final s in result.skills) {
-          final exists = await repo.skillExists(s.name);
-          if (exists) continue;
-          await repo.installSkill(
-            name: s.name,
-            version: '1.0.0',
-            author: skill.author,
-            category: skill.category,
-            yamlContent: yamlContent ?? '',
-            description: '通过后端安装 · ${s.files} 个文件',
-          );
+
+        // If the market skill is a collection, create a parent entry so
+        // children are grouped under an expandable collection tile.
+        String? collectionParentId;
+        if (skill.isCollection && skill.sourceRepo != null) {
+          final allInstalled = await repo.getInstalledSkills();
+          final existing = allInstalled.where(
+                (s) => s.name == skill.sourceRepo && s.isCollection,
+              ).firstOrNull;
+          if (existing != null) {
+            collectionParentId = existing.id;
+          } else {
+            final parent = await repo.installSkill(
+              name: skill.sourceRepo!,
+              version: '1.0.0',
+              author: skill.author,
+              category: skill.category,
+              yamlContent: '',
+              isCollection: true,
+              description: skill.displayName,
+            );
+            collectionParentId = parent.id;
+          }
         }
-      } catch (_) {
-        // Local cache failure is non-fatal — backend is primary
+
+        for (final s in result.skills) {
+          try {
+            final exists = await repo.skillExists(s.name,
+                parentId: collectionParentId);
+            if (exists) continue;
+            await repo.installSkill(
+              name: s.name,
+              version: '1.0.0',
+              author: skill.author,
+              category: skill.category,
+              yamlContent: yamlContent ?? '',
+              parentId: collectionParentId,
+              description: '通过后端安装 · ${s.files} 个文件',
+            );
+          } catch (e) {
+            // ignore: avoid_print
+            print('SkillMarketService: local cache write failed for ${s.name} ($e)');
+          }
+        }
+      } catch (e) {
+        // ignore: avoid_print
+        print('SkillMarketService: local cache sync failed ($e)');
       }
     }
 

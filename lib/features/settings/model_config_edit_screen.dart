@@ -32,7 +32,7 @@ class _ModelConfigEditScreenState
     _aliasController = TextEditingController(
         text: c?.alias ?? 'My DeepSeek');
     _apiUrlController = TextEditingController(
-        text: c?.apiUrl ?? 'https://api.deepseek.com');
+        text: c?.apiUrl ?? 'https://api.deepseek.com/anthropic');
     _modelController = TextEditingController(
         text: c?.modelName ?? 'deepseek-v4-pro');
     _apiKeyController = TextEditingController();
@@ -74,8 +74,8 @@ class _ModelConfigEditScreenState
               controller: _apiUrlController,
               decoration: const InputDecoration(
                 labelText: 'API 地址',
-                hintText: 'https://api.deepseek.com',
-                helperText: 'OpenAI 兼容的 API endpoint',
+                hintText: 'https://api.deepseek.com/anthropic',
+                helperText: 'Anthropic 兼容的 API endpoint',
               ),
               validator: (v) =>
                   (v == null || v.isEmpty) ? '请输入' : null,

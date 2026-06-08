@@ -137,10 +137,27 @@ class _GitHubSkillScreenState
     final repoUrl = _extractRepoPath(_urlCtrl.text.trim());
     if (repoUrl.isEmpty) return;
 
+    // Backend API installs by repo (not single file). Confirm with user
+    // before installing the entire repo from a single skill click.
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('安装整个仓库'),
+        content: Text('后端安装会下载整个 $repoUrl 仓库中的所有技能。\n\n继续吗？'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('取消')),
+          FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('继续安装')),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+
     try {
+      if (!mounted) return;
       setState(() => _isLoading = true);
       final api = ref.read(skillApiServiceProvider);
-      await api.installSkill(repoUrl);
+      final giteeToken = await ref.read(secureStorageProvider).read(key: 'gitee_token');
+      await api.installSkill(repoUrl, giteeToken: giteeToken);
 
       ref.invalidate(installedSkillsProvider);
       ref.invalidate(topLevelSkillsProvider);
@@ -149,7 +166,7 @@ class _GitHubSkillScreenState
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('${skill.name} 安装成功'),
+            content: Text('$repoUrl 安装成功'),
             backgroundColor: Colors.green,
           ),
         );
@@ -159,7 +176,7 @@ class _GitHubSkillScreenState
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text(
-                '安装失败: ${e.toString().replaceAll("Exception: ", "")}'),
+                '$repoUrl 安装失败: ${e.toString().replaceAll("Exception: ", "")}'),
             backgroundColor: Colors.red,
           ),
         );
@@ -360,7 +377,7 @@ class _GitHubSkillScreenState
                             child: OutlinedButton.icon(
                               onPressed: () => ref.read(installerProvider.notifier).retryFailed(),
                               icon: const Icon(Icons.refresh, size: 16),
-                              label: Text('重试 ${installState.failedSkills.length} 个失败'),
+                              label: Text('重试 ${installState.failedNames.length} 个失败'),
                               style: OutlinedButton.styleFrom(
                                 foregroundColor: Colors.orange.shade800,
                                 side: BorderSide(color: Colors.orange.shade300),

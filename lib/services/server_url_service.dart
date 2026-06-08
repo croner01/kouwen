@@ -3,7 +3,7 @@ import 'secure_storage_service.dart';
 
 /// Single source of truth for the default server URL.
 const kDefaultServerUrl =
-    'https://none-ringtone-adaptor-materials.trycloudflare.com';
+    'https://cord-cheapest-configured-army.trycloudflare.com';
 
 /// Persists and exposes the backend server URL via SecureStorage.
 ///

@@ -8,6 +8,110 @@ class MarkdownView extends StatelessWidget {
 
   const MarkdownView({super.key, required this.content, this.isDark = false});
 
+  /// Pre-process LaTeX math into readable plain-text / Unicode, then strip
+  /// remaining delimiters so the output renders cleanly in Markdown.
+  ///
+  /// Handles three common patterns from LLM output:
+  ///   1. Raw LaTeX commands: \frac{a}{b}, \sqrt{x}, \sum_{i=1}^{n}, …
+  ///   2. Inline math delimiters: \( ... \)
+  ///   3. Display math delimiters: $$ ... $$
+  static String _preprocessLatex(String input) {
+    // ── Step 1: Convert raw LaTeX commands (not inside delimiters) ──
+    input = input.replaceAllMapped(
+      RegExp(r'\\frac\{([^{}]*(?:\{[^{}]*\}[^{}]*)*)\}\{([^{}]*(?:\{[^{}]*\}[^{}]*)*)\}'),
+      (m) => '(${m.group(1)!}/${m.group(2)!})',
+    );
+    input = input.replaceAllMapped(
+      RegExp(r'\\sqrt\{([^{}]*(?:\{[^{}]*\}[^{}]*)*)\}'),
+      (m) => '√(${m.group(1)!})', // √(...)
+    );
+    input = input.replaceAllMapped(
+      RegExp(r'\\sqrt\[([^\]]+)\]\{([^{}]*(?:\{[^{}]*\}[^{}]*)*)\}'),
+      (m) => '∛(${m.group(2)!})', // ∛(...) — for cube root etc, use generic
+    );
+    input = input.replaceAllMapped(
+      RegExp(r'\\sum_\{([^}]*)\}\^\{([^}]*)\}'),
+      (m) => 'Σ(${m.group(1)!}→${m.group(2)!})', // Σ(lower→upper)
+    );
+    input = input.replaceAllMapped(
+      RegExp(r'\\int_\{([^}]*)\}\^\{([^}]*)\}'),
+      (m) => '∫(${m.group(1)!}→${m.group(2)!})', // ∫(lower→upper)
+    );
+
+    // Common LaTeX symbols → Unicode
+    const latexToUnicode = {
+      r'\pm': '±',       // ±
+      r'\times': '×',    // ×
+      r'\div': '÷',      // ÷
+      r'\cdot': '·',     // ·
+      r'\leq': '≤',      // ≤
+      r'\geq': '≥',      // ≥
+      r'\neq': '≠',      // ≠
+      r'\approx': '≈',   // ≈
+      r'\infty': '∞',    // ∞
+      r'\alpha': 'α',    // α
+      r'\beta': 'β',     // β
+      r'\gamma': 'γ',    // γ
+      r'\delta': 'δ',    // δ
+      r'\epsilon': 'ε',  // ε
+      r'\pi': 'π',       // π
+      r'\sigma': 'σ',    // σ
+      r'\omega': 'ω',    // ω
+      r'\mu': 'μ',       // μ
+      r'\lambda': 'λ',   // λ
+      r'\theta': 'θ',    // θ
+      r'\rho': 'ρ',      // ρ
+      r'\to': '→',       // →
+      r'\rightarrow': '→', // →
+      r'\leftarrow': '←', // ←
+      r'\Rightarrow': '⇒', // ⇒
+      r'\Leftrightarrow': '⇔', // ⇔
+      r'\ldots': '…',    // …
+      r'\cdots': '⋯',    // ⋯
+      r'\ge': '≥',       // ≥
+      r'\le': '≤',       // ≤
+      r'\ne': '≠',       // ≠
+      r'\sim': '∼',      // ∼
+      r'\propto': '∝',   // ∝
+      r'\partial': '∂',  // ∂
+      r'\nabla': '∇',    // ∇
+      r'\forall': '∀',   // ∀
+      r'\exists': '∃',   // ∃
+      r'\in': '∈',       // ∈
+      r'\notin': '∉',    // ∉
+      r'\subset': '⊂',   // ⊂
+      r'\supset': '⊃',   // ⊃
+      r'\cup': '∪',      // ∪
+      r'\cap': '∩',      // ∩
+      r'\emptyset': '∅', // ∅
+      r'\angle': '∠',    // ∠
+      r'\triangle': '△', // △
+      r'\equiv': '≡',    // ≡
+      r'\cong': '≅',     // ≅
+      r'\perp': '⟂',     // ⟂
+      r'\parallel': '∥', // ∥
+      r'\circ': '∘',     // ∘
+      r'\star': '★',     // ★
+    };
+    for (final entry in latexToUnicode.entries) {
+      input = input.replaceAll(entry.key, entry.value);
+    }
+
+    // ── Step 2: Strip inline math delimiters \( ... \) → keep content in backticks ──
+    input = input.replaceAllMapped(
+      RegExp(r'\\\((.+?)\\\)', dotAll: true),
+      (m) => ' `${m.group(1)!.trim()}` ',
+    );
+
+    // ── Step 3: Display math $$ ... $$ → fenced code block ──
+    input = input.replaceAllMapped(
+      RegExp(r'\$\$(.+?)\$\$', dotAll: true),
+      (m) => '\n```\n${m.group(1)!.trim()}\n```\n',
+    );
+
+    return input;
+  }
+
   @override
   Widget build(BuildContext context) {
     final textColor =
@@ -15,8 +119,10 @@ class MarkdownView extends StatelessWidget {
     final codeBg =
         isDark ? const Color(0xFF0F172A) : const Color(0xFF1E293B);
 
+    final processed = _preprocessLatex(content);
+
     return MarkdownBody(
-      data: content,
+      data: processed,
       selectable: true,
       builders: {
         'code': CodeBlockBuilder(isDark: isDark),

@@ -72,6 +72,7 @@ class GitHubSkillLoader {
     'ren02/skills': 'Anthropic 官方技能集 — 包含代码审查、MCP构建、设计系统等专业开发技能，覆盖全栈开发场景',
     'ren02/marketplace': 'AI SkillStore 市场 — 安全审计与一键安装工具集，社区精选技能合集',
     'ren02/claude-trading-skills': '量化交易策略库 — 50+交易技能，覆盖选股、回测、技术分析、策略优化全流程',
+    'ren02/trading-agents-plugin': 'Trading Agents 交易分析 — 多智能体LLM投研，Web Search驱动，覆盖A股/港股/美股技术分析、基本面、多空辩论与买卖点研判',
     'ren02/awesome-medical-ai-skills-c': '家庭医生·医疗AI工具集 — 中文医疗问诊、症状分析、健康管理一站式技能包',
     'ren02/claude-legal-skill': '合同审查助手 — CUAD风险检测、红线批注、合同条款智能分析',
     'ren02/ai-legal-claude': 'AI法律助手 — 14个法律专业Skill，并行Agent协作，覆盖多领域法律实务',

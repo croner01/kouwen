@@ -77,7 +77,7 @@ class MySkillsScreen extends ConsumerWidget {
                     TextButton.icon(
                       onPressed: () => ref.read(installerProvider.notifier).retryFailed(),
                       icon: const Icon(Icons.refresh, size: 14),
-                      label: Text('重试 ${installState.failedSkills.length} 个',
+                      label: Text('重试 ${installState.failedNames.length} 个',
                           style: const TextStyle(fontSize: 12)),
                       style: TextButton.styleFrom(foregroundColor: Colors.orange.shade800),
                     ),

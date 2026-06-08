@@ -48,7 +48,7 @@ class SandboxService {
   }
 
   /// Default sandbox server URL — fallback when no user-configured URL.
-  static const defaultUrl = 'https://none-ringtone-adaptor-materials.trycloudflare.com';
+  static const defaultUrl = 'https://cord-cheapest-configured-army.trycloudflare.com';
 
   /// Try the given [preferredUrl] first, then fall back to [defaultUrl].
   static Future<String> discoverUrl({Dio? dio, String? preferredUrl}) async {

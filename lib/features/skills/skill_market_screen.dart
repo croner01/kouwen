@@ -247,9 +247,11 @@ class _SkillMarketScreenState extends ConsumerState<SkillMarketScreen> {
                           return _MarketSkillTile(
                             skill: ms,
                             onInstall: () async {
+                              final giteeToken = await ref.read(secureStorageProvider).read(key: 'gitee_token');
                               await SkillMarketService.installSkill(
                                 ms,
                                 apiService: api,
+                                giteeToken: giteeToken,
                               );
                               ref.invalidate(marketSkillsProvider);
                             },
@@ -351,14 +353,21 @@ class _SkillMarketScreenState extends ConsumerState<SkillMarketScreen> {
     if (match == null) {
       if (ms.id != null) {
         try {
-          match = await repo.installSkill(
-            name: ms.name,
-            version: ms.version,
-            author: ms.author,
-            category: ms.category,
-            yamlContent: '',
-            description: '通过后端安装',
-          );
+          // Guard against duplicate insertion
+          if (!await repo.skillExists(ms.name)) {
+            match = await repo.installSkill(
+              name: ms.name,
+              version: ms.version,
+              author: ms.author,
+              category: ms.category,
+              yamlContent: '',
+              description: '通过后端安装',
+            );
+          } else {
+            // Already exists (race condition with parallel calls) — re-query
+            final all = await repo.getInstalledSkills();
+            match = all.where((s) => s.name == ms.name).firstOrNull;
+          }
         } catch (_) {
           match = null;
         }

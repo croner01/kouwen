@@ -73,6 +73,7 @@ class AgentService {
     String? systemPrompt,
     int maxTokens = 16384,
     int maxTurns = 15,
+    bool webSearchEnabled = false,
     CancelToken? cancelToken,
   }) async* {
     final response = await _dio.post(
@@ -85,6 +86,7 @@ class AgentService {
         if (systemPrompt != null) 'system': systemPrompt,
         'max_tokens': maxTokens,
         'max_turns': maxTurns,
+        'web_search': webSearchEnabled,
       },
       options: Options(
         responseType: ResponseType.stream,
@@ -96,11 +98,16 @@ class AgentService {
       cancelToken: cancelToken,
     );
 
-    final stream = response.data.stream as Stream<List<int>>;
+    if (response.data is! ResponseBody) {
+      yield AgentErrorEvent('服务器返回了非流式响应，请检查后端部署');
+      return;
+    }
+
+    final stream = (response.data as ResponseBody).stream;
     String buffer = '';
 
     await for (final chunk in stream) {
-      buffer += utf8.decode(chunk);
+      buffer += utf8.decode(chunk, allowMalformed: true);
       // SSE: events separated by \n\n
       while (buffer.contains('\n\n')) {
         final idx = buffer.indexOf('\n\n');
