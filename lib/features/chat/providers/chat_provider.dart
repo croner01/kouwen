@@ -101,8 +101,12 @@ class ChatNotifier extends StateNotifier<ChatState> {
       skill: null,
       messages: [],
       error: null,
+      isLoading: false,
+      streamingContent: '',
       streamInterrupted: false,
       isLoadingConversation: false,
+      compactSuggested: false,
+      isCompacting: false,
     );
   }
 
@@ -255,12 +259,15 @@ class ChatNotifier extends StateNotifier<ChatState> {
     final modelConfig = await _modelManager.getDefaultConfig();
     if (modelConfig == null) {
       state = state.copyWith(
+          isLoading: false,
           error: '请先在设置中配置模型 API');
       return;
     }
     final apiKey = await _modelManager.getApiKey(modelConfig.id);
     if (apiKey == null) {
-      state = state.copyWith(error: 'API Key 未找到');
+      state = state.copyWith(
+          isLoading: false,
+          error: 'API Key 未找到');
       return;
     }
 
