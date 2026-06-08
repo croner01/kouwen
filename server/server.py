@@ -166,6 +166,7 @@ async def agent_loop(
         base_url=base_url,
         api_key=api_key,
         max_retries=2,
+        timeout=httpx.Timeout(120.0, connect=10.0),
     )
 
     system_prompt = [
@@ -185,8 +186,11 @@ async def agent_loop(
                 tools=TOOLS,
                 messages=loop_messages,
                 stream=True,
-                timeout=httpx.Timeout(600.0),
+                timeout=httpx.Timeout(120.0, connect=10.0),
             )
+        except asyncio.CancelledError:
+            yield sse_event("error", {"message": "请求被取消（客户端断开连接）"})
+            return
         except Exception as e:
             yield sse_event("error", {"message": str(e)})
             return

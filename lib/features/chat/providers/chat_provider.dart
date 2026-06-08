@@ -436,11 +436,25 @@ class ChatNotifier extends StateNotifier<ChatState> {
       var errMsg = e.toString();
       if (e is ApiException) {
         errMsg = e.message;
+      } else if (e is DioException) {
+        if (e.type == DioExceptionType.receiveTimeout || e.type == DioExceptionType.connectionTimeout) {
+          errMsg = '服务器响应超时，请稍后重试';
+        } else if (e.type == DioExceptionType.connectionError) {
+          errMsg = '无法连接到服务器，请检查网络连接';
+        } else if (e.response?.data != null) {
+          final data = e.response!.data;
+          if (data is Map) {
+            errMsg = (data['detail'] ?? data['message'] ?? data.toString()).toString();
+          } else {
+            errMsg = data.toString();
+          }
+        }
+      } else {
+        errMsg = errMsg
+            .replaceAll('Exception: ', '')
+            .replaceAll('DioException', '')
+            .trim();
       }
-      errMsg = errMsg
-          .replaceAll('Exception: ', '')
-          .replaceAll('DioException', '')
-          .trim();
 
       state = state.copyWith(
         isLoading: false,
