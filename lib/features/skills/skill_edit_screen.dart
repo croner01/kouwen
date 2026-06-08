@@ -62,12 +62,25 @@ class _SkillEditScreenState extends ConsumerState<SkillEditScreen> {
 
   Future<void> _load() async {
     final repo = SkillRepository(ref.read(dbProvider));
-    final skill = await repo.getSkillById(widget.skillId);
+    var skill = await repo.getSkillById(widget.skillId);
     if (skill == null || !mounted) return;
+
+    // If yamlContent is empty, try backend API fallback
+    if (skill.yamlContent.isEmpty) {
+      try {
+        final api = ref.read(skillApiServiceProvider);
+        final backendSkills = await api.listSkills();
+        final bs = backendSkills.where((s) => s.name == skill.name).firstOrNull;
+        if (bs != null && bs.yamlContent.isNotEmpty) {
+          await repo.updateSkillYamlContent(widget.skillId, bs.yamlContent);
+          skill = await repo.getSkillById(widget.skillId);
+        }
+      } catch (_) {}
+    }
 
     ParsedSkill? parsed;
     try {
-      parsed = SkillParser.parse(skill.yamlContent);
+      parsed = SkillParser.parse(skill?.yamlContent ?? '');
     } catch (_) {}
 
     setState(() {

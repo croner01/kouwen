@@ -235,6 +235,24 @@ class InstallerNotifier extends StateNotifier<InstallState> {
     try {
       final api = _ref.read(skillApiServiceProvider);
       final installResult = await api.installSkill(repoName, giteeToken: state.lastGiteeToken);
+
+      // Sync yamlContent from backend into local cache (retry may have
+      // succeeded but original install had empty yamlContent due to download failure).
+      try {
+        final repo = SkillRepository(_ref.read(dbProvider));
+        final backendSkills = await api.listSkills();
+        for (final bs in backendSkills) {
+          if (bs.yamlContent.isEmpty) continue;
+          final installed = await repo.getInstalledSkills();
+          final existing = installed.where((s) => s.name == bs.name).firstOrNull;
+          if (existing != null && existing.yamlContent.isEmpty) {
+            await repo.updateSkillYamlContent(existing.id, bs.yamlContent);
+          }
+        }
+      } catch (_) {
+        // Non-fatal — yamlContent will be fetched on next market screen open
+      }
+
       _ref.invalidate(installedSkillsProvider);
       _ref.invalidate(topLevelSkillsProvider);
       _ref.invalidate(marketSkillsProvider);

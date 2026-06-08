@@ -7,6 +7,7 @@ import '../../data/repositories.dart';
 import '../../services/github_skill_source.dart';
 import '../../data/skill_source_store.dart';
 import 'skill_detail_screen.dart';
+import 'my_skills_screen.dart';
 import 'github_skill_screen.dart';
 
 final marketSkillsProvider = FutureProvider<List<MarketSkill>>((ref) async {
@@ -351,6 +352,15 @@ class _SkillMarketScreenState extends ConsumerState<SkillMarketScreen> {
   }
 
   Future<void> _openDetail(MarketSkill ms) async {
+    // Collection entries can't be loaded directly — redirect to MySkillsScreen
+    if (ms.isCollection) {
+      if (!mounted) return;
+      Navigator.of(context).push(
+        MaterialPageRoute(builder: (_) => const MySkillsScreen()),
+      );
+      return;
+    }
+
     final db = ref.read(dbProvider);
     final repo = SkillRepository(db);
     final installed = await repo.getInstalledSkills();
@@ -359,6 +369,17 @@ class _SkillMarketScreenState extends ConsumerState<SkillMarketScreen> {
       match = installed.firstWhere((s) => s.name == ms.name);
     } catch (_) {
       match = null;
+    }
+
+    // Local cache has empty yamlContent but backend API returned it — update the cache
+    if (match != null && match.yamlContent.isEmpty && ms.yamlContent != null && ms.yamlContent!.isNotEmpty) {
+      try {
+        await repo.updateSkillYamlContent(match.id, ms.yamlContent!);
+        // Re-read to get fresh data
+        match = await repo.getSkillById(match.id);
+      } catch (_) {
+        // Non-fatal — skill detail screen will still load
+      }
     }
 
     // No local cache — try to create placeholder from backend data
@@ -372,7 +393,7 @@ class _SkillMarketScreenState extends ConsumerState<SkillMarketScreen> {
               version: ms.version,
               author: ms.author,
               category: ms.category,
-              yamlContent: '',
+              yamlContent: ms.yamlContent ?? '',
               description: '通过后端安装',
             );
           } else {

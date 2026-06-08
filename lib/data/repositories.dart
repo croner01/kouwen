@@ -178,6 +178,21 @@ class SkillRepository {
       whereArgs: [id],
     );
   }
+
+  /// Update only the yamlContent field (e.g. when backend has content that
+  /// the local cache missed during install).
+  Future<void> updateSkillYamlContent(String id, String yamlContent) async {
+    final db = await _db.database;
+    await db.update(
+      'installed_skills',
+      {
+        'yaml_content': yamlContent,
+        'updated_at': DateTime.now().millisecondsSinceEpoch,
+      },
+      where: 'id = ?',
+      whereArgs: [id],
+    );
+  }
 }
 
 class ConversationRepository {

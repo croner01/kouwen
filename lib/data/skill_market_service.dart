@@ -4,6 +4,7 @@ import 'package:flutter/services.dart' show rootBundle;
 import 'repositories.dart';
 import 'database.dart';
 import '../services/skill_api_service.dart';
+import '../services/github_skill_loader.dart';
 
 /// A skill entry in the market catalog
 class MarketSkill {
@@ -25,6 +26,7 @@ class MarketSkill {
   final int? childCount;
   String? id; // Backend skill ID, for uninstall
   List<String> pythonDeps; // pip dependency list from backend
+  String? yamlContent; // SKILL.md content from backend, for local cache
 
   MarketSkill({
     required this.name,
@@ -45,6 +47,7 @@ class MarketSkill {
     this.childCount,
     this.id,
     this.pythonDeps = const [],
+    this.yamlContent,
   });
 
   factory MarketSkill.fromJson(Map<String, dynamic> json) {
@@ -64,6 +67,7 @@ class MarketSkill {
       rating: (json['rating'] as num).toDouble(),
       isCollection: json['is_collection'] as bool? ?? false,
       childCount: json['child_count'] as int?,
+      yamlContent: json['yaml_content'] as String?,
     );
   }
 
@@ -86,6 +90,7 @@ class MarketSkill {
       isInstalled: true,
       id: backend.id,
       pythonDeps: backend.pythonDeps,
+      yamlContent: backend.yamlContent.isNotEmpty ? backend.yamlContent : null,
     );
   }
 
@@ -163,19 +168,14 @@ class SkillMarketService {
     // Also save to local SQLite as cache (for yamlContent access in chat/detail)
     if (result.skills.isNotEmpty) {
       try {
-        // Try to download SKILL.md content for local cache
+        // Try to download SKILL.md content for local cache using GitHubSkillLoader
+        // which has Gitee branch fallback and auth support.
         String? yamlContent;
         if (skill.sourceUrl != null) {
           try {
-            final dio = Dio();
-            dio.options.connectTimeout = const Duration(seconds: 10);
-            dio.options.receiveTimeout = const Duration(seconds: 15);
-            final resp = await dio.get(skill.sourceUrl!);
-            if (resp.statusCode == 200 && resp.data != null) {
-              yamlContent = resp.data.toString();
-            }
+            final loader = GitHubSkillLoader(giteeToken: giteeToken);
+            yamlContent = await loader.downloadSkillContent(skill.sourceUrl!);
           } catch (e) {
-            // Download failed — backend has the content, local cache will be empty
             // ignore: avoid_print
             print('SkillMarketService: SKILL.md download failed ($e)');
           }

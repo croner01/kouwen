@@ -161,4 +161,29 @@ void main() {
       verifyNever(() => txn.insert('installed_skills', any()));
     });
   });
+
+  group('updateSkillYamlContent', () {
+    test('updates yaml_content and updated_at for the given id', () async {
+      when(() => mockDb.update(
+            any(),
+            any(),
+            where: any(named: 'where'),
+            whereArgs: any(named: 'whereArgs'),
+          )).thenAnswer((_) async => 1);
+
+      await repo.updateSkillYamlContent('s1', 'name: 新内容\nversion: 2.0.0');
+
+      // Capture the updates map in a single verify call
+      final captured = verify(() => mockDb.update(
+            'installed_skills',
+            captureAny(),
+            where: 'id = ?',
+            whereArgs: ['s1'],
+          )).captured;
+      expect(captured, isNotEmpty);
+      final updates = captured[0] as Map;
+      expect(updates, containsPair('yaml_content', 'name: 新内容\nversion: 2.0.0'));
+      expect(updates, contains('updated_at'));
+    });
+  });
 }

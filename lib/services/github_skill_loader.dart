@@ -348,7 +348,8 @@ class GitHubSkillLoader {
   Future<String?> downloadSkillContent(String url) async {
     final isGitee = url.contains('gitee.com');
     try {
-      final resp = await _dio.get(url,
+      final requestUrl = isGitee ? _giteeAuth(url) : url;
+      final resp = await _dio.get(requestUrl,
           options: Options(headers: _getHeaders(isGitee: isGitee)));
       if (resp.statusCode == 200) {
         return resp.data.toString();
@@ -363,7 +364,8 @@ class GitHubSkillLoader {
           final fallbackUrl =
               url.replaceAll(RegExp(r'/raw/[^/]+/'), '/raw/$branch/');
           if (fallbackUrl == url) continue; // already tried this branch
-          final resp = await _dio.get(fallbackUrl,
+          final authUrl = _giteeAuth(fallbackUrl);
+          final resp = await _dio.get(authUrl,
               options: Options(headers: _getHeaders(isGitee: true)));
           if (resp.statusCode == 200) {
             return resp.data.toString();

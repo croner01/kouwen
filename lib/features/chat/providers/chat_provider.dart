@@ -154,7 +154,7 @@ class ChatNotifier extends StateNotifier<ChatState> {
 
   /// Load a skill into the current conversation
   Future<void> loadSkill(String skillId) async {
-    final skillData = await _skillRepo.getSkillById(skillId);
+    var skillData = await _skillRepo.getSkillById(skillId);
     if (skillData == null) {
       // ignore: avoid_print
       print('loadSkill: skill not found by id=$skillId (${skillId.length} chars)');
@@ -168,9 +168,44 @@ class ChatNotifier extends StateNotifier<ChatState> {
       return;
     }
 
-    // Skill with empty content — backend didn't return SKILL.md content
+    // Skill with empty content — try backend API fallback before giving up
     if (skillData.yamlContent.isEmpty) {
-      state = state.copyWith(error: '技能内容为空，请尝试重新安装');
+      String? fetchedContent;
+      try {
+        final api = _ref.read(skillApiServiceProvider);
+        final backendSkills = await api.listSkills();
+        final bs = backendSkills.where((s) => s.name == skillData.name).firstOrNull;
+        if (bs != null && bs.yamlContent.isNotEmpty) {
+          fetchedContent = bs.yamlContent;
+          await _skillRepo.updateSkillYamlContent(skillId, bs.yamlContent);
+        }
+      } catch (_) {
+        // Backend unreachable — fall through to error below
+      }
+
+      if (fetchedContent == null || fetchedContent.isEmpty) {
+        state = state.copyWith(error: '技能内容为空，请尝试重新安装');
+        return;
+      }
+
+      // Parse using fetched content
+      ParsedSkill fetchedSkill;
+      try {
+        fetchedSkill = SkillParser.parse(fetchedContent);
+      } catch (_) {
+        state = state.copyWith(error: '技能文件格式错误');
+        return;
+      }
+
+      // Persist skill association
+      if (state.conversation != null) {
+        await _conversationRepo.updateConversation(
+          state.conversation!.id,
+          skillId: skillId,
+          skillName: skillData.name,
+        );
+      }
+      state = state.copyWith(skill: fetchedSkill, suggestedSkills: [], error: null);
       return;
     }
 
