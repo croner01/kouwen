@@ -24,6 +24,7 @@ class ChatState {
   final bool compactSuggested;      // true when turn count >= threshold
   final bool isCompacting;          // true during summary generation
   final int? dismissedCompactAtTurnCount; // user dismissed at this turn, for cool-down
+  final bool isCrossDayContinuation; // true when loaded conversation is from a previous day
 
   const ChatState({
     this.messages = const [],
@@ -39,6 +40,7 @@ class ChatState {
     this.compactSuggested = false,
     this.isCompacting = false,
     this.dismissedCompactAtTurnCount,
+    this.isCrossDayContinuation = false,
   });
 
   ChatState copyWith({
@@ -55,6 +57,7 @@ class ChatState {
     bool? compactSuggested,
     bool? isCompacting,
     Object? dismissedCompactAtTurnCount = _sentinel,
+    bool? isCrossDayContinuation,
   }) {
     return ChatState(
       messages: messages ?? this.messages,
@@ -72,6 +75,7 @@ class ChatState {
       dismissedCompactAtTurnCount: dismissedCompactAtTurnCount == _sentinel
           ? this.dismissedCompactAtTurnCount
           : dismissedCompactAtTurnCount as int?,
+      isCrossDayContinuation: isCrossDayContinuation ?? this.isCrossDayContinuation,
     );
   }
   static const _sentinel = Object();
@@ -107,6 +111,7 @@ class ChatNotifier extends StateNotifier<ChatState> {
       isLoadingConversation: false,
       compactSuggested: false,
       isCompacting: false,
+      isCrossDayContinuation: false,
     );
   }
 
@@ -140,14 +145,19 @@ class ChatNotifier extends StateNotifier<ChatState> {
         }
       }
 
+      // Detect cross-day continuation
+      final isCrossDay = !_isSameDay(conversation.updatedAt, DateTime.now());
+
       state = state.copyWith(
         conversation: conversation,
         skill: skill,
         messages: messages,
         error: null,
+        streamingContent: '', // B3: clear stale streaming content
         isLoadingConversation: false,
         compactSuggested: false,
         dismissedCompactAtTurnCount: null,
+        isCrossDayContinuation: isCrossDay,
       );
     } catch (e) {
       // ignore: avoid_print
@@ -326,9 +336,40 @@ class ChatNotifier extends StateNotifier<ChatState> {
       );
     }
 
+    // Track partial response across try-catch for connection interrupt handling
+    String fullResponse = '';
+    bool gotFinalEvent = false;
+
     try {
       // Build messages for Agent
-      final systemPrompt = (state.skill?.systemPrompt ?? _defaultSystemPrompt());
+      String systemPrompt;
+      if (state.skill != null) {
+        final s = state.skill!;
+        final skillDesc = s.description != null && s.description!.isNotEmpty
+            ? '\n简介: ${s.description}'
+            : '';
+        final capsDesc = s.capabilities.isNotEmpty
+            ? '\n能力: ${s.capabilities.join(", ")}'
+            : '';
+        systemPrompt = '当前技能: ${s.icon} ${s.name}$skillDesc$capsDesc\n'
+            '---\n'
+            '${s.systemPrompt}\n\n'
+            '请以上述角色身份回答用户问题，严格遵循技能的系统提示。'
+            '如果用户问题超出技能范围，在回答中指明然后基于通用知识继续。';
+      } else {
+        systemPrompt = _defaultSystemPrompt();
+      }
+
+      // Build date context — enhanced when continuing from a previous day
+      String dateContext = _dateContext();
+      if (state.isCrossDayContinuation) {
+        final lastActive = state.conversation?.updatedAt;
+        if (lastActive != null) {
+          final lastStr = _formatDateShort(lastActive);
+          dateContext += '\n【重要】本次对话是从 $lastStr 继续的，以上历史消息中的'
+              '"今天""现在"等时间表述均属于过去。所有新问题请严格以当前时间为准。';
+        }
+      }
 
       // Build conversation messages (no context injection — Agent handles tools)
       // Limit history to prevent unbounded context growth over many turns.
@@ -353,30 +394,28 @@ class ChatNotifier extends StateNotifier<ChatState> {
       }
       agentMessages.add({'role': 'user', 'content': content});
 
+
       // Cancel any previous in-flight request
       _activeCancelToken?.cancel();
       _activeCancelToken = CancelToken();
 
       // ── Agent Service (handles sandbox + search internally) ──
       final agent = _ref.read(agentServiceProvider);
-      // Use JWT if available for backend conversation management
+      // B4: pass JWT as parameter to avoid shared-state races
       final auth = _ref.read(authServiceProvider);
-      if (auth.isLoggedIn && auth.token != null) {
-        agent.setAuth(auth.token!);
-      }
+      final jwtToken = auth.isLoggedIn ? auth.token : null;
       final stream = agent.chat(
         apiKey: apiKey,
         baseUrl: modelConfig.apiUrl,
         model: modelConfig.modelName,
         messages: agentMessages,
-        systemPrompt: '$systemPrompt\n\n${_dateContext()}',
+        systemPrompt: '$systemPrompt\n\n$dateContext',
         webSearchEnabled: state.webSearchEnabled,
         cancelToken: _activeCancelToken,
+        jwtToken: jwtToken,
       );
 
-      String fullResponse = '';
       final currentSkill = state.skill; // capture for tool label context
-      bool gotFinalEvent = false;
       await for (final event in stream) {
         if (event is TextDeltaEvent) {
           fullResponse += event.content;
@@ -423,6 +462,7 @@ class ChatNotifier extends StateNotifier<ChatState> {
           streamingContent: '',
           isLoading: false,
           streamInterrupted: wasInterrupted,
+          isCrossDayContinuation: false, // clear flag after first cross-day response
         );
         _checkCompactThreshold();
       } else {
@@ -461,23 +501,47 @@ class ChatNotifier extends StateNotifier<ChatState> {
             .replaceAll('DioException', '')
             .trim();
         if (errMsg.contains('HttpConnection closed') || errMsg.contains('Connection closed')) {
-          errMsg = '服务器连接中断，请稍后重试';
+          errMsg = '连接中断，已保存部分回复';
         } else if (errMsg.contains('SocketException') || errMsg.contains('Connection refused')) {
           errMsg = '无法连接到服务器，请检查网络连接';
         }
       }
 
-      state = state.copyWith(
-        isLoading: false,
-        streamingContent: '',
-        error: errMsg,
-      );
-
-      Future.delayed(const Duration(seconds: 12), () {
-        if (state.error == errMsg) {
-          state = state.copyWith(error: null);
+      // ── Save partial response if any text was received (e.g., app backgrounding) ──
+      if (fullResponse.isNotEmpty) {
+        try {
+          final partialMsg = await _conversationRepo.addMessage(
+            conversationId: state.conversation!.id,
+            role: MessageRole.assistant,
+            content: '$fullResponse\n\n> ⚠️ 回复因连接中断未能完成',
+          );
+          state = state.copyWith(
+            messages: [...state.messages, partialMsg],
+            isLoading: false,
+            streamingContent: '',
+            error: null,
+            streamInterrupted: true,
+          );
+        } catch (_) {
+          // DB failure — fall through to error state
+          state = state.copyWith(
+            isLoading: false,
+            streamingContent: '',
+            error: errMsg,
+          );
         }
-      });
+      } else {
+        state = state.copyWith(
+          isLoading: false,
+          streamingContent: '',
+          error: errMsg,
+        );
+        Future.delayed(const Duration(seconds: 12), () {
+          if (state.error == errMsg) {
+            state = state.copyWith(error: null);
+          }
+        });
+      }
     }
   }
 
@@ -506,6 +570,11 @@ class ChatNotifier extends StateNotifier<ChatState> {
 
   void clearError() {
     state = state.copyWith(error: null);
+  }
+
+  /// Set error message from outside the notifier (e.g., init failure).
+  void setError(String message) {
+    state = state.copyWith(error: message, isLoading: false);
   }
 
   void toggleWebSearch() {
@@ -547,6 +616,7 @@ class ChatNotifier extends StateNotifier<ChatState> {
 
   /// Compress the conversation: summarize all history via LLM and replace messages.
   Future<void> compactConversation() async {
+    if (state.isLoading) return; // B1: prevent compact during streaming
     final targetConvId = state.conversation?.id;
     final targetTitle = state.conversation?.title; // capture early, avoid race on switch
     if (targetConvId == null || state.messages.length < 4) return;
@@ -677,6 +747,16 @@ class ChatNotifier extends StateNotifier<ChatState> {
     return '当前时间: ${now.year}年${now.month}月${now.day}日 $wd '
         '${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')}\n'
         '请基于以上当前时间回答用户问题。如果用户问「现在」「今天」「最近」等涉及时间的问题，以上述时间为准。';
+  }
+
+  /// Check if two dates fall on the same calendar day.
+  static bool _isSameDay(DateTime a, DateTime b) {
+    return a.year == b.year && a.month == b.month && a.day == b.day;
+  }
+
+  /// Short date string for cross-day transition messages (e.g. "6月9日").
+  static String _formatDateShort(DateTime dt) {
+    return '${dt.month}月${dt.day}日';
   }
 }
 
